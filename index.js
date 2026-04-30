@@ -4,7 +4,33 @@ app.use(express.json());
 
 const TOKEN = process.env.TELEGRAM_TOKEN;
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+const DATABASE_URL = process.env.DATABASE_URL;
 const PORT = process.env.PORT || 3000;
+
+// ─── PostgreSQL ───────────────────────────────────────────────────────────────
+const { Client } = require('pg');
+
+async function getDb() {
+  const client = new Client({ connectionString: DATABASE_URL });
+  await client.connect();
+  return client;
+}
+
+async function initDb() {
+  const db = await getDb();
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id SERIAL PRIMARY KEY,
+      chat_id BIGINT,
+      raw_text TEXT,
+      data JSONB,
+      status VARCHAR(20) DEFAULT 'new',
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  await db.end();
+  console.log('DB initialized');
+}
 
 // ─── Claude: парсинг заявки ───────────────────────────────────────────────────
 async function parseCargo(text) {
@@ -23,9 +49,7 @@ async function parseCargo(text) {
       messages: [{ role: 'user', content: text }]
     })
   });
-
   const data = await response.json();
-  console.log('Claude response:', JSON.stringify(data).slice(0, 300));
   const raw = data.content[0].text.trim().replace(/```json|```/g, '').trim();
   return JSON.parse(raw);
 }
@@ -46,7 +70,7 @@ function formatReply(p) {
   msg += line('💳', 'Оплата', p.paymentType);
   msg += line('📞', 'Телефон', p.phone);
   msg += line('📝', 'Примітки', p.notes);
-  msg += `\n_Натисни кнопку нижче щоб розмістити:_`;
+  msg += `\n_Заявку збережено. Extension розмістить автоматично._`;
   return msg;
 }
 
@@ -70,7 +94,7 @@ app.post(`/webhook/${TOKEN}`, async (req, res) => {
   const update = req.body;
 
   if (update.callback_query) {
-    await tg('answerCallbackQuery', { callback_query_id: update.callback_query.id, text: 'Відкрий сайт та заповни дані' });
+    await tg('answerCallbackQuery', { callback_query_id: update.callback_query.id, text: 'OK' });
     return;
   }
 
@@ -80,18 +104,24 @@ app.post(`/webhook/${TOKEN}`, async (req, res) => {
   const text = msg.text;
 
   if (text === '/start') {
-    return sendMessage(chatId, `👋 *Привіт! Я LogiDesk бот.*\n\nПиши заявку в будь-якій формі:\n\n_Харків Варшава, 10 тонн, тент, 15 травня, 1200 євро нал, +380671234567_\n\nЯ розберу і дам кнопки для розміщення.`);
-  }
-
-  if (text === '/help') {
-    return sendMessage(chatId, `📋 Пиши заявку текстом — маршрут, вага, дати, кузов, ставка, телефон. Я все розберу автоматично.`);
+    return sendMessage(chatId, `👋 *Привіт! Я LogiDesk бот.*\n\nПиши заявку в будь-якій формі:\n\n_Харків → Варшава, 10 тонн, тент, 15 травня, 1200 євро нал, +380671234567_\n\nЯ розберу і збережу. Chrome Extension розмістить на Lardi і Della автоматично.`);
   }
 
   await tg('sendChatAction', { chat_id: chatId, action: 'typing' });
 
   try {
     const parsed = await parseCargo(text);
-    await sendMessage(chatId, formatReply(parsed), {
+
+    // Зберігаємо в БД
+    const db = await getDb();
+    const result = await db.query(
+      'INSERT INTO orders (chat_id, raw_text, data) VALUES ($1, $2, $3) RETURNING id',
+      [chatId, text, JSON.stringify(parsed)]
+    );
+    await db.end();
+    const orderId = result.rows[0].id;
+
+    await sendMessage(chatId, formatReply(parsed) + `\n🆔 ID заявки: \`${orderId}\``, {
       reply_markup: {
         inline_keyboard: [[
           { text: '🟦 Lardi-Trans', url: 'https://lardi-trans.com/log/mygruztrans/v2/add/gruz/' },
@@ -105,6 +135,37 @@ app.post(`/webhook/${TOKEN}`, async (req, res) => {
   }
 });
 
+// ─── API для Chrome Extension ─────────────────────────────────────────────────
+// Отримати нові заявки
+app.get('/api/orders/pending', async (req, res) => {
+  const key = req.headers['x-api-key'];
+  if (key !== process.env.API_KEY) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const db = await getDb();
+    const result = await db.query(
+      "SELECT * FROM orders WHERE status = 'new' ORDER BY created_at ASC"
+    );
+    await db.end();
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Оновити статус заявки
+app.post('/api/orders/:id/status', async (req, res) => {
+  const key = req.headers['x-api-key'];
+  if (key !== process.env.API_KEY) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const db = await getDb();
+    await db.query('UPDATE orders SET status = $1 WHERE id = $2', [req.body.status, req.params.id]);
+    await db.end();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/setup', async (req, res) => {
   const webhookUrl = `https://logidesk-bot-production.up.railway.app/webhook/${TOKEN}`;
   const result = await tg('setWebhook', { url: webhookUrl });
@@ -112,4 +173,7 @@ app.get('/setup', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.send('LogiDesk Bot is running ✅'));
-app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
+
+initDb().then(() => {
+  app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
+});
