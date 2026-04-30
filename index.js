@@ -2,12 +2,20 @@ const express = require('express');
 const app = express();
 app.use(express.json());
 
+// CORS для Chrome Extension
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 const TOKEN = process.env.TELEGRAM_TOKEN;
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
 const PORT = process.env.PORT || 3000;
 
-// ─── PostgreSQL ───────────────────────────────────────────────────────────────
 const { Client } = require('pg');
 
 async function getDb() {
@@ -32,7 +40,6 @@ async function initDb() {
   console.log('DB initialized');
 }
 
-// ─── Claude: парсинг заявки ───────────────────────────────────────────────────
 async function parseCargo(text) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -54,7 +61,6 @@ async function parseCargo(text) {
   return JSON.parse(raw);
 }
 
-// ─── Форматирование ───────────────────────────────────────────────────────────
 function formatReply(p) {
   const line = (icon, label, val) => val ? `${icon} *${label}:* ${val}\n` : '';
   let msg = `✅ *Заявку розібрано*\n\n`;
@@ -74,7 +80,6 @@ function formatReply(p) {
   return msg;
 }
 
-// ─── Telegram API ─────────────────────────────────────────────────────────────
 async function tg(method, body) {
   const r = await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
     method: 'POST',
@@ -88,7 +93,6 @@ async function sendMessage(chatId, text, extra = {}) {
   return tg('sendMessage', { chat_id: chatId, text, parse_mode: 'Markdown', ...extra });
 }
 
-// ─── Webhook ──────────────────────────────────────────────────────────────────
 app.post(`/webhook/${TOKEN}`, async (req, res) => {
   res.sendStatus(200);
   const update = req.body;
@@ -111,8 +115,6 @@ app.post(`/webhook/${TOKEN}`, async (req, res) => {
 
   try {
     const parsed = await parseCargo(text);
-
-    // Зберігаємо в БД
     const db = await getDb();
     const result = await db.query(
       'INSERT INTO orders (chat_id, raw_text, data) VALUES ($1, $2, $3) RETURNING id',
@@ -135,16 +137,13 @@ app.post(`/webhook/${TOKEN}`, async (req, res) => {
   }
 });
 
-// ─── API для Chrome Extension ─────────────────────────────────────────────────
-// Отримати нові заявки
+// API для Chrome Extension
 app.get('/api/orders/pending', async (req, res) => {
   const key = req.headers['x-api-key'];
   if (key !== process.env.API_KEY) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const db = await getDb();
-    const result = await db.query(
-      "SELECT * FROM orders WHERE status = 'new' ORDER BY created_at ASC"
-    );
+    const result = await db.query("SELECT * FROM orders WHERE status = 'new' ORDER BY created_at ASC");
     await db.end();
     res.json(result.rows);
   } catch (e) {
@@ -152,7 +151,6 @@ app.get('/api/orders/pending', async (req, res) => {
   }
 });
 
-// Оновити статус заявки
 app.post('/api/orders/:id/status', async (req, res) => {
   const key = req.headers['x-api-key'];
   if (key !== process.env.API_KEY) return res.status(401).json({ error: 'Unauthorized' });
