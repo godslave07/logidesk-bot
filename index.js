@@ -8,11 +8,29 @@ const PORT = process.env.PORT || 3000;
 
 // ─── Gemini: парсинг заявки ───────────────────────────────────────────────────
 async function parseCargo(text) {
-  const prompt = `Ты парсер заявок на грузоперевозки. Из текста извлеки данные и верни ТОЛЬКО валидный JSON без markdown и без пояснений.
-Поля: from, fromCountry, to, toCountry, cargoName, weight (тонны), volume (м³), dateFrom (DD.MM.YYYY), dateTo (DD.MM.YYYY), truckType (Тент/Рефрижератор/Открытый/Контейнер/Борт/Цистерна/Самосвал/Зерновоз/Автовоз), loadType (Повна/Часткова), price (число), currency (EUR/USD/UAH), paymentType (Готівка/Безнал/Картка), phone, notes.
-Если поле не найдено — пустая строка. ТОЛЬКО JSON без обёртки.
+  const prompt = `Ты парсер заявок на грузоперевозки. Из текста извлеки данные.
+Верни ТОЛЬКО JSON объект, без markdown, без \`\`\`, без пояснений, просто { ... }
 
-Текст: ${text}`;
+Поля JSON:
+from - город отправления
+fromCountry - страна отправления
+to - город назначения
+toCountry - страна назначения
+cargoName - тип груза
+weight - вес в тоннах (только число)
+volume - объём м³ (только число)
+dateFrom - дата от DD.MM.YYYY
+dateTo - дата до DD.MM.YYYY
+truckType - тип кузова: Тент, Рефрижератор, Відкритий, Контейнер, Борт, Цистерна, Самоскид, Зерновоз, Автовоз, Криті
+loadType - Повна або Часткова
+price - ставка число
+currency - EUR USD UAH
+paymentType - Готівка Безнал Картка
+phone - телефон
+notes - примітки
+
+Якщо поле не знайдено - порожній рядок "".
+Текст заявки: "${text}"`;
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
@@ -21,14 +39,28 @@ async function parseCargo(text) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.1 }
+        generationConfig: { temperature: 0 }
       })
     }
   );
 
   const data = await response.json();
-  const raw = data.candidates[0].content.parts[0].text
-    .trim().replace(/```json|```/g, '').trim();
+  console.log('Gemini raw:', JSON.stringify(data).slice(0, 500));
+  
+  let raw = data.candidates[0].content.parts[0].text.trim();
+  console.log('Raw text:', raw);
+  
+  // Чистим от markdown
+  raw = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
+  
+  // Находим JSON объект
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start !== -1 && end !== -1) {
+    raw = raw.slice(start, end + 1);
+  }
+  
+  console.log('Cleaned JSON:', raw);
   return JSON.parse(raw);
 }
 
@@ -102,13 +134,13 @@ app.post(`/webhook/${TOKEN}`, async (req, res) => {
       }
     });
   } catch (e) {
-    console.error('Error:', e);
-    await sendMessage(chatId, '❌ Не зміг розібрати. Спробуй переформулювати заявку.');
+    console.error('Error:', e.message);
+    await sendMessage(chatId, `❌ Помилка розбору. Деталі: ${e.message.slice(0,100)}`);
   }
 });
 
 app.get('/setup', async (req, res) => {
-  const webhookUrl = `${process.env.WEBHOOK_URL}/webhook/${TOKEN}`;
+  const webhookUrl = `https://logidesk-bot-production.up.railway.app/webhook/${TOKEN}`;
   const result = await tg('setWebhook', { url: webhookUrl });
   res.json({ webhookUrl, result });
 });
