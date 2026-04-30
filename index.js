@@ -33,7 +33,7 @@ notes - примітки
 Текст заявки: "${text}"`;
 
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -46,6 +46,10 @@ notes - примітки
 
   const data = await response.json();
   console.log('Gemini raw:', JSON.stringify(data).slice(0, 500));
+  
+  if (!data.candidates || !data.candidates[0]) {
+    throw new Error('Gemini no candidates: ' + JSON.stringify(data).slice(0, 200));
+  }
   
   let raw = data.candidates[0].content.parts[0].text.trim();
   console.log('Raw text:', raw);
@@ -147,3 +151,4 @@ app.get('/setup', async (req, res) => {
 
 app.get('/', (req, res) => res.send('LogiDesk Bot is running ✅'));
 app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
+
