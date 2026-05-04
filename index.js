@@ -242,16 +242,12 @@ app.post(`/webhook/${TOKEN}`, async (req, res) => {
     await db.end();
     const orderId = result.rows[0].id;
 
-    await sendMessage(chatId, formatReply(parsed) + `\n🆔 ID: \`${orderId}\`\n\n_Extension побачить заявку і запропонує розмістити._`, {
+    await sendMessage(chatId, formatReply(parsed) + `\n🆔 ID: \`${orderId}\`\n\n📌 _Відкрий Extension у Chrome — заявка вже там. Натисни "Розмістити" щоб опублікувати на сайтах._`, {
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '🟦 Відкрити Lardi', url: 'https://lardi-trans.com/log/mygruztrans/v2/add/gruz/' },
-            { text: '🟩 Відкрити Della', url: 'https://della.ua/placecargo/' }
-          ],
-          [
-            { text: '✅ Виконано', callback_data: `complete:${orderId}` },
-            { text: '❌ Скасувати', callback_data: `cancel:${orderId}` }
+            { text: '🟦 Відкрити Lardi вручну', url: 'https://lardi-trans.com/log/mygruztrans/v2/add/gruz/' },
+            { text: '🟩 Відкрити Della вручну', url: 'https://della.ua/placecargo/' }
           ]
         ]
       }
