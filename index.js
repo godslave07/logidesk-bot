@@ -11,11 +11,13 @@ app.use((req, res, next) => {
   next();
 });
 
-const TOKEN       = process.env.TELEGRAM_TOKEN;
+const TOKEN         = process.env.TELEGRAM_TOKEN;
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const DATABASE_URL  = process.env.DATABASE_URL;
 const API_KEY       = process.env.API_KEY || 'logidesk2024';
 const PORT          = process.env.PORT || 3000;
+const LARDI_TOKEN   = process.env.LARDI_API_TOKEN;
+const LARDI_BASE    = 'https://api.lardi-trans.com/v2';
 
 const { Client } = require('pg');
 
@@ -46,8 +48,238 @@ async function initDb() {
   await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS posted_della BOOLEAN DEFAULT false`).catch(() => {});
   await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS last_refresh_lardi TIMESTAMP`).catch(() => {});
   await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS last_refresh_della TIMESTAMP`).catch(() => {});
+  await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS lardi_proposal_id INTEGER`).catch(() => {});
   await db.end();
   console.log('DB initialized');
+}
+
+// ===== LARDI API =====
+
+// In-memory reference data cache (refreshed every hour)
+let _lardiRefs = null;
+let _lardiRefsTs = 0;
+
+async function loadLardiRefs() {
+  if (!LARDI_TOKEN) return null;
+  if (_lardiRefs && (Date.now() - _lardiRefsTs) < 3600000) return _lardiRefs;
+
+  try {
+    const h = { 'Authorization': `Bearer ${LARDI_TOKEN}`, 'Content-Type': 'application/json' };
+    const lang = 'uk';
+    const get = url => fetch(url, { headers: h }).then(r => r.json());
+
+    const [bodyTypes, currencies, paymentMoments, paymentUnits, paymentTypes] = await Promise.all([
+      get(`${LARDI_BASE}/references/body/types?language=${lang}`),
+      get(`${LARDI_BASE}/references/currencies?language=${lang}`),
+      get(`${LARDI_BASE}/references/payment/moments?language=${lang}`),
+      get(`${LARDI_BASE}/references/payment/units?language=${lang}`),
+      get(`${LARDI_BASE}/references/payment/types?language=${lang}`),
+    ]);
+
+    _lardiRefs = { bodyTypes, currencies, paymentMoments, paymentUnits, paymentTypes };
+    _lardiRefsTs = Date.now();
+    console.log(`[Lardi] Refs loaded — body:${bodyTypes.length} cur:${currencies.length} moments:${paymentMoments.length} units:${paymentUnits.length} types:${paymentTypes.length}`);
+    return _lardiRefs;
+  } catch (e) {
+    console.error('[Lardi] loadLardiRefs error:', e.message);
+    return null;
+  }
+}
+
+async function lookupLardiCity(cityName) {
+  if (!LARDI_TOKEN || !cityName) return null;
+  try {
+    const url = `${LARDI_BASE}/references/towns/by-name?query=${encodeURIComponent(cityName)}&countrySigns=UA&language=uk&limit=5`;
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${LARDI_TOKEN}` } });
+    const data = await res.json();
+    if (!Array.isArray(data) || !data.length) return null;
+    const lower = cityName.toLowerCase().trim();
+    return data.find(c => c.name.toLowerCase() === lower) || data[0];
+  } catch (e) {
+    console.error('[Lardi] lookupLardiCity error:', e.message);
+    return null;
+  }
+}
+
+function _findInList(list, ...keywords) {
+  return list.find(item =>
+    keywords.some(kw => item.name.toLowerCase().includes(kw.toLowerCase()))
+  );
+}
+
+function getBodyTypeIds(refs, truckTypeStr) {
+  // Keyword → body type name fragments
+  const TRUCK_MAP = [
+    { keys: ['тент', 'шторн', 'крит'],         frags: ['тент', 'шторн'] },
+    { keys: ['ізотерм', 'изотерм'],             frags: ['ізотерм', 'изотерм'] },
+    { keys: ['реф', 'холодильн'],               frags: ['реф', 'холодильн'] },
+    { keys: ['цільно', 'цельн', 'закрит', 'закры'], frags: ['цільно', 'цельно', 'закри', 'закры'] },
+    { keys: ['борт', 'відкр', 'открыт'],        frags: ['борт', 'відкрит', 'открыт'] },
+    { keys: ['платформ', 'низьк'],              frags: ['платформ', 'низьк'] },
+    { keys: ['зерновоз'],                       frags: ['зерновоз'] },
+    { keys: ['автовоз'],                        frags: ['автовоз'] },
+    { keys: ['контейнер'],                      frags: ['контейнер'] },
+    { keys: ['самоскид', 'самосвал'],           frags: ['самоскид', 'самосвал'] },
+    { keys: ['цистерн'],                        frags: ['цистерн'] },
+  ];
+
+  if (!refs?.bodyTypes?.length) {
+    // Hardcoded fallback (from API docs samples + common knowledge)
+    const FALLBACK = { тент: 34, ізотерм: 25, реф: 18, цільно: 19, борт: 17, контейнер: 27, автовоз: 22, зерновоз: 21, самоскид: 20, цистерн: 15 };
+    if (!truckTypeStr) return [34]; // тент default
+    const lower = truckTypeStr.toLowerCase();
+    for (const [kw, id] of Object.entries(FALLBACK)) {
+      if (lower.includes(kw)) return [id];
+    }
+    return [34];
+  }
+
+  if (!truckTypeStr) {
+    // Default: Тент
+    const tent = _findInList(refs.bodyTypes, 'тент');
+    return tent ? [tent.id] : [refs.bodyTypes[0].id];
+  }
+
+  const lower = truckTypeStr.toLowerCase();
+  for (const { keys, frags } of TRUCK_MAP) {
+    if (keys.some(k => lower.includes(k))) {
+      const match = refs.bodyTypes.find(b => frags.some(f => b.name.toLowerCase().includes(f)));
+      if (match) return [match.id];
+    }
+  }
+  // last resort — first type
+  return [refs.bodyTypes[0].id];
+}
+
+function getCurrencyId(refs, currencyStr) {
+  const c = (currencyStr || '').toLowerCase();
+  if (!refs?.currencies?.length) {
+    if (c.includes('usd') || c === '$') return 4;
+    if (c.includes('eur') || c === '€') return 6;
+    return 2;
+  }
+  if (c.includes('usd') || c === '$') return (_findInList(refs.currencies, '$', 'usd', 'дол') || { id: 4 }).id;
+  if (c.includes('eur') || c === '€') return (_findInList(refs.currencies, '€', 'eur', 'євр') || { id: 6 }).id;
+  return (_findInList(refs.currencies, 'грн', 'uah') || { id: 2 }).id;
+}
+
+function getPaymentUnitId(refs) {
+  // We always price per trip (рейс)
+  if (!refs?.paymentUnits?.length) return 6; // best-guess fallback
+  const unit = _findInList(refs.paymentUnits, 'рейс', 'trip', 'journey', 'поїзд');
+  return unit ? unit.id : refs.paymentUnits[0].id;
+}
+
+function getPaymentMomentId(refs, momentStr) {
+  if (!momentStr) return null;
+  const lower = momentStr.toLowerCase();
+  if (!refs?.paymentMoments?.length) {
+    if (lower.includes('розвантаж') || lower.includes('выгруз')) return 4;
+    if (lower.includes('завантаж')  || lower.includes('загруз'))  return 2;
+    return null;
+  }
+  if (lower.includes('розвантаж') || lower.includes('выгруз'))
+    return (_findInList(refs.paymentMoments, 'розвантаж', 'вигруз', 'выгруз') || { id: 4 }).id;
+  if (lower.includes('завантаж') || lower.includes('загруз'))
+    return (_findInList(refs.paymentMoments, 'завантаж', 'загруз') || { id: 2 }).id;
+  if (lower.includes('передоплат') || lower.includes('предоплат'))
+    return _findInList(refs.paymentMoments, 'передоплат', 'предоплат')?.id || null;
+  return null;
+}
+
+function getPaymentFormIds(refs, paymentTypeStr) {
+  if (!paymentTypeStr) return null;
+  const lower = paymentTypeStr.toLowerCase();
+  if (!refs?.paymentTypes?.length) {
+    if (lower.includes('готів') || lower.includes('нал'))   return [2];
+    if (lower.includes('безгот') || lower.includes('безнал')) return [4];
+    if (lower.includes('картк'))                             return [10];
+    return null;
+  }
+  const kw = lower.includes('готів') || lower.includes('нал') ? ['готів', 'cash', 'нал']
+           : lower.includes('безгот') || lower.includes('безнал') ? ['безгот', 'wire', 'безнал', 'перерах']
+           : lower.includes('картк') ? ['картк', 'card']
+           : null;
+  if (!kw) return null;
+  const match = refs.paymentTypes.find(t => kw.some(k => t.name.toLowerCase().includes(k)));
+  return match ? [match.id] : null;
+}
+
+function parseISODate(str) {
+  if (!str) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+  if (/^\d{2}\.\d{2}\.\d{4}$/.test(str)) {
+    const [d, m, y] = str.split('.');
+    return `${y}-${m}-${d}`;
+  }
+  return null;
+}
+
+async function postToLardiAPI(order) {
+  if (!LARDI_TOKEN) return null;
+
+  const d = order.data || order;
+
+  // Load refs (cached)
+  const refs = await loadLardiRefs();
+
+  // City lookup
+  const [fromCity, toCity] = await Promise.all([
+    lookupLardiCity(d.from),
+    lookupLardiCity(d.to),
+  ]);
+
+  const mkWaypoint = (city, fallbackName) => city
+    ? { townId: city.id, areaId: city.areaId, countrySign: city.countrySign || 'UA' }
+    : { address: fallbackName || '', countrySign: 'UA' };
+
+  const waypointSource = [mkWaypoint(fromCity, d.from)];
+  const waypointTarget = [mkWaypoint(toCity, d.to)];
+
+  const today     = new Date().toISOString().slice(0, 10);
+  const dateFrom  = parseISODate(d.dateFrom) || today;
+  const dateTo    = parseISODate(d.dateTo)   || dateFrom;
+
+  const payload = {
+    dateFrom,
+    dateTo,
+    contentName:        d.cargoName || d.cargo || '',
+    cargoBodyTypeIds:   getBodyTypeIds(refs, d.truckType),
+    paymentValue:       parseFloat(d.price) || 0,
+    paymentCurrencyId:  getCurrencyId(refs, d.currency),
+    paymentUnitId:      getPaymentUnitId(refs),
+    sizeMass:           parseFloat(d.weight) || 0,
+    waypointListSource: waypointSource,
+    waypointListTarget: waypointTarget,
+    language: 'uk',
+  };
+
+  if (d.volume)          payload.sizeVolume      = parseFloat(d.volume);
+  const momentId       = getPaymentMomentId(refs, d.paymentMoment);
+  if (momentId)          payload.paymentMomentId  = momentId;
+  const formIds        = getPaymentFormIds(refs, d.paymentType);
+  if (formIds)           payload.paymentForms     = formIds;
+  if (d.notes)           payload.note             = d.notes;
+
+  console.log('[Lardi API] Posting:', JSON.stringify(payload));
+
+  const res = await fetch(`${LARDI_BASE}/proposals/my/add/cargo`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${LARDI_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const result = await res.json();
+  console.log('[Lardi API] Response:', JSON.stringify(result));
+
+  if (!res.ok) {
+    throw new Error(`Lardi API ${res.status}: ${JSON.stringify(result).slice(0, 200)}`);
+  }
+
+  return result; // { id: <proposal_id> }
 }
 
 // ===== ПАРСЕР =====
@@ -185,10 +417,35 @@ app.post(`/webhook/${TOKEN}`, async (req, res) => {
       'INSERT INTO orders (chat_id, raw_text, data) VALUES ($1, $2, $3) RETURNING id',
       [chatId, text, JSON.stringify(parsed)]
     );
-    await db.end();
     const orderId = result.rows[0].id;
+    await db.end();
 
-    await sendMessage(chatId, formatReply(parsed) + `\n🆔 ID заявки: \`${orderId}\`\n\n_Відкрий Extension у Chrome — заявка вже там. Натисни "Розмістити" щоб опублікувати на сайтах._`);
+    // Post to Lardi API if token is configured
+    let lardiMsg = '';
+    if (LARDI_TOKEN) {
+      try {
+        const lardiResult = await postToLardiAPI({ id: orderId, data: parsed });
+        if (lardiResult?.id) {
+          const db2 = await getDb();
+          await db2.query(
+            'UPDATE orders SET posted_lardi = true, lardi_proposal_id = $1, last_refresh_lardi = NOW() WHERE id = $2',
+            [lardiResult.id, orderId]
+          );
+          await db2.end();
+          lardiMsg = `\n✅ *Lardi:* розміщено #${lardiResult.id}`;
+        }
+      } catch (le) {
+        console.error('[Lardi API] Post error:', le.message);
+        lardiMsg = `\n⚠️ *Lardi API:* ${le.message.slice(0, 80)}`;
+      }
+    }
+
+    await sendMessage(chatId,
+      formatReply(parsed) +
+      `\n🆔 ID заявки: \`${orderId}\`` +
+      lardiMsg +
+      `\n\n_Відкрий Extension у Chrome — заявка вже там. Натисни "Розмістити" щоб опублікувати на сайтах._`
+    );
   } catch (e) {
     console.error('Parse error:', e.message);
     await sendMessage(chatId, `❌ Помилка парсингу: ${e.message.slice(0, 100)}\n\nСпробуйте ще раз або перефразуйте заявку.`);
@@ -411,7 +668,7 @@ async function load() {
         <div class="card-right">
           <span class="badge \${o.status}">\${STATUS_LABEL[o.status] || o.status}</span>
           <div class="platforms">
-            <span class="pb \${o.posted_lardi ? 'on' : 'off'}">L</span>
+            <span class="pb \${o.posted_lardi ? 'on' : 'off'}" title="\${o.lardi_proposal_id ? 'Lardi #'+o.lardi_proposal_id : 'Не розміщено'}">L\${o.lardi_proposal_id ? ' #'+o.lardi_proposal_id : ''}</span>
             <span class="pb \${o.posted_della ? 'della-on' : 'off'}">D</span>
           </div>
           \${o.status !== 'completed' && o.status !== 'cancelled' ? \`
@@ -441,6 +698,55 @@ setInterval(load, 30000);
 </script>
 </body>
 </html>`);
+});
+
+// ===== LARDI API STATUS =====
+app.get('/api/lardi-status', auth, async (req, res) => {
+  if (!LARDI_TOKEN) return res.json({ enabled: false, message: 'LARDI_API_TOKEN not set' });
+  try {
+    const refs = await loadLardiRefs();
+    if (!refs) return res.json({ enabled: true, status: 'error', message: 'Failed to load reference data' });
+    res.json({
+      enabled: true,
+      status: 'ok',
+      refs: {
+        bodyTypes:     refs.bodyTypes.length,
+        currencies:    refs.currencies.map(c => `${c.id}=${c.name}`),
+        paymentMoments: refs.paymentMoments.map(m => `${m.id}=${m.name}`),
+        paymentUnits:  refs.paymentUnits.map(u => `${u.id}=${u.name}`),
+        paymentTypes:  refs.paymentTypes.map(t => `${t.id}=${t.name}`),
+        bodyTypesSample: refs.bodyTypes.slice(0, 20).map(b => `${b.id}=${b.name}`),
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ enabled: true, status: 'error', message: e.message });
+  }
+});
+
+// Ручне розміщення заявки на Lardi
+app.post('/api/orders/:id/post-lardi', auth, async (req, res) => {
+  try {
+    const db = await getDb();
+    const row = await db.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
+    await db.end();
+    if (!row.rows.length) return res.status(404).json({ error: 'Order not found' });
+
+    const order = row.rows[0];
+    const result = await postToLardiAPI({ id: order.id, data: order.data });
+
+    if (result?.id) {
+      const db2 = await getDb();
+      await db2.query(
+        'UPDATE orders SET posted_lardi = true, lardi_proposal_id = $1, last_refresh_lardi = NOW() WHERE id = $2',
+        [result.id, order.id]
+      );
+      await db2.end();
+    }
+
+    res.json({ ok: true, lardi_proposal_id: result?.id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ===== SETUP WEBHOOK =====
