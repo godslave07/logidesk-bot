@@ -146,7 +146,8 @@ function getBodyTypeIds(refs, truckTypeStr) {
 
   if (!refs?.bodyTypes?.length) {
     // Hardcoded fallback (from API docs samples + common knowledge)
-    const FALLBACK = { тент: 34, ізотерм: 25, реф: 18, цільно: 19, борт: 17, контейнер: 27, автовоз: 22, зерновоз: 21, самоскид: 20, цистерн: 15 };
+    // IDs verified against live Lardi API /v2/references/body/types
+    const FALLBACK = { тент: 34, ізотерм: 25, реф: 18, цільно: 36, борт: 63, платформ: 64, контейнер: 27, автовоз: 20, зерновоз: 21, самоскид: 20, цистерн: 15 };
     if (!truckTypeStr) return [34]; // тент default
     const lower = truckTypeStr.toLowerCase();
     for (const [kw, id] of Object.entries(FALLBACK)) {
@@ -185,10 +186,11 @@ function getCurrencyId(refs, currencyStr) {
 }
 
 function getPaymentUnitId(refs) {
-  // We always price per trip (рейс)
-  if (!refs?.paymentUnits?.length) return 6; // best-guess fallback
+  // Lardi only has km(2) and t(4) as units — no "per trip".
+  // Return null so we skip this field (price is treated as total for the route).
+  if (!refs?.paymentUnits?.length) return null;
   const unit = _findInList(refs.paymentUnits, 'рейс', 'trip', 'journey', 'поїзд');
-  return unit ? unit.id : refs.paymentUnits[0].id;
+  return unit ? unit.id : null; // don't default to km/ton — just omit
 }
 
 function getPaymentMomentId(refs, momentStr) {
@@ -268,7 +270,6 @@ async function postToLardiAPI(order) {
     cargoBodyTypeIds:   getBodyTypeIds(refs, d.truckType),
     paymentValue:       parseFloat(d.price) || 0,
     paymentCurrencyId:  getCurrencyId(refs, d.currency),
-    paymentUnitId:      getPaymentUnitId(refs),
     sizeMass:           parseFloat(d.weight) || 0,
     waypointListSource: waypointSource,
     waypointListTarget: waypointTarget,
