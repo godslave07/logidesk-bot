@@ -938,20 +938,9 @@ async function refreshLardiOrders(force = false) {
   let data = null;
   try { data = JSON.parse(text); } catch (_) {}
 
-  // Lardi може повертати різні структури:
-  // { cargo: { success: [...], errors: [...] } }
-  // { success: [...], errors: [...] }
-  // або просто { items: [...] }
-  const successIds =
-    data?.cargo?.success ||
-    data?.success ||
-    (Array.isArray(data?.items) ? data.items.map(i => i.id) : null) ||
-    [];
-
-  const errors =
-    data?.cargo?.errors ||
-    data?.errors ||
-    [];
+  // Lardi повертає: { cargoes: { success: [...], errors: [...] } }
+  const successIds = data?.cargoes?.success || data?.cargo?.success || data?.success || [];
+  const errors     = data?.cargoes?.errors  || data?.cargo?.errors  || data?.errors  || [];
 
   if (successIds.length) {
     const db2 = await getDb();
@@ -962,27 +951,13 @@ async function refreshLardiOrders(force = false) {
       );
     }
     await db2.end();
-  }
-
-  // Якщо відповідь OK і нема явних помилок — вважаємо всі успішними
-  const effectiveSuccess = successIds.length || (res.ok && !errors.length ? cargoIds.length : 0);
-  if (effectiveSuccess && !successIds.length) {
-    // Оновлюємо всі яких намагались оновити
-    const db2 = await getDb();
-    for (const propId of cargoIds) {
-      await db2.query(
-        'UPDATE orders SET last_refresh_lardi = NOW() WHERE lardi_proposal_id = $1',
-        [propId]
-      );
-    }
-    await db2.end();
+    console.log(`[Lardi Refresh] Updated last_refresh_lardi for ${successIds.length} orders`);
   }
 
   return {
     attempted: cargoIds.length,
-    success:   effectiveSuccess,
-    errors,
-    rawResponse: text.slice(0, 300),
+    success:   successIds.length,
+    errors:    errors.map(e => ({ id: e.id, message: e.message, code: e.errorCode })),
   };
 }
 
