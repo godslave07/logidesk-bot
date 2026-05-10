@@ -788,6 +788,96 @@ app.post('/api/orders/:id/post-lardi', auth, async (req, res) => {
   }
 });
 
+// ===== АВТО-ОНОВЛЕННЯ LARDI (щогодини, 8:00–18:00 за Берліном) =====
+function isBerlinWorkHours() {
+  const hour = Number(
+    new Intl.DateTimeFormat('de-DE', {
+      timeZone: 'Europe/Berlin',
+      hour: 'numeric',
+      hour12: false
+    }).format(new Date())
+  );
+  return hour >= 8 && hour < 18;
+}
+
+async function refreshLardiOrders() {
+  if (!LARDI_TOKEN) {
+    console.log('[Lardi Refresh] Skipped — no LARDI_API_TOKEN');
+    return { skipped: true, reason: 'no token' };
+  }
+  if (!isBerlinWorkHours()) {
+    const hour = new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', hour: 'numeric', hour12: false }).format(new Date());
+    console.log(`[Lardi Refresh] Skipped — outside working hours (Berlin ${hour}:xx)`);
+    return { skipped: true, reason: 'outside hours' };
+  }
+
+  const db = await getDb();
+  const result = await db.query(
+    "SELECT id, lardi_proposal_id FROM orders WHERE status = 'active' AND posted_lardi = true AND lardi_proposal_id IS NOT NULL"
+  );
+  await db.end();
+
+  if (!result.rows.length) {
+    console.log('[Lardi Refresh] No active Lardi orders to refresh');
+    return { refreshed: 0 };
+  }
+
+  const cargoIds = result.rows.map(r => Number(r.lardi_proposal_id));
+  console.log(`[Lardi Refresh] Refreshing ${cargoIds.length} proposals:`, cargoIds);
+
+  const res = await fetch(`${LARDI_BASE}/proposals/my/repeat`, {
+    method: 'POST',
+    headers: { 'Authorization': LARDI_TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cargoIds }),
+  });
+
+  const data = await res.json();
+  console.log('[Lardi Refresh] API response:', JSON.stringify(data));
+
+  if (!res.ok) {
+    throw new Error(`Lardi API ${res.status}: ${JSON.stringify(data).slice(0, 200)}`);
+  }
+
+  // Оновлюємо last_refresh_lardi для успішно оновлених
+  const successIds = data?.cargo?.success || [];
+  if (successIds.length) {
+    const db2 = await getDb();
+    for (const propId of successIds) {
+      await db2.query(
+        'UPDATE orders SET last_refresh_lardi = NOW() WHERE lardi_proposal_id = $1',
+        [propId]
+      );
+    }
+    await db2.end();
+  }
+
+  return {
+    attempted: cargoIds.length,
+    success:   successIds.length,
+    errors:    data?.cargo?.errors || [],
+  };
+}
+
+// Запускаємо перевірку кожні 60 хвилин
+setInterval(async () => {
+  try {
+    const result = await refreshLardiOrders();
+    console.log('[Lardi Refresh] Scheduled result:', result);
+  } catch (e) {
+    console.error('[Lardi Refresh] Scheduled error:', e.message);
+  }
+}, 60 * 60 * 1000);
+
+// Ручне оновлення через API (для тесту)
+app.post('/api/lardi/refresh', auth, async (req, res) => {
+  try {
+    const result = await refreshLardiOrders();
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== SETUP WEBHOOK =====
 app.get('/setup', async (req, res) => {
   const webhookUrl = `https://logidesk-bot-production.up.railway.app/webhook/${TOKEN}`;
