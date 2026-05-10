@@ -864,11 +864,12 @@ async function syncLardiProposals() {
 app.get('/api/lardi/raw-proposals', auth, async (req, res) => {
   try {
     const st = req.query.status || 'published';
-    const r = await fetch(`${LARDI_BASE}/proposals/my/cargoes/${st}?language=uk&size=5`, {
-      headers: { 'Authorization': LARDI_TOKEN }
-    });
-    const raw = await r.json();
-    res.json({ httpStatus: r.status, raw });
+    const url = `${LARDI_BASE}/proposals/my/cargoes/${st}?language=uk&size=5`;
+    const r = await fetch(url, { headers: { 'Authorization': LARDI_TOKEN } });
+    const text = await r.text();
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch (_) {}
+    res.json({ url, httpStatus: r.status, rawText: text.slice(0, 1000), parsed });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
