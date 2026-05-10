@@ -806,6 +806,8 @@ async function syncLardiProposals() {
   const raw = await res.json();
   const proposals = extractArr(raw);
   console.log(`[Lardi Sync] Got ${proposals.length} proposals from Lardi`);
+  if (proposals.length) console.log('[Lardi Sync] First proposal keys:', JSON.stringify(Object.keys(proposals[0])));
+  if (proposals.length) console.log('[Lardi Sync] First proposal sample:', JSON.stringify(proposals[0]).slice(0, 500));
 
   if (!proposals.length) return { synced: 0, total: 0 };
 
@@ -817,7 +819,12 @@ async function syncLardiProposals() {
 
   let synced = 0;
   for (const p of proposals) {
-    const propId = String(p.id);
+    // Lardi може повертати id як 'id', 'cargoId', 'proposalId' тощо
+    const propId = String(p.id ?? p.cargoId ?? p.proposalId ?? p.offerId ?? '');
+    if (!propId || propId === 'undefined') {
+      console.warn('[Lardi Sync] Proposal has no id, keys:', Object.keys(p));
+      continue;
+    }
     if (knownIds.has(propId)) continue; // вже є в БД
 
     // Витягуємо дані з пропозиції для зручного відображення
