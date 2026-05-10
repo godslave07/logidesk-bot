@@ -897,12 +897,12 @@ function isBerlinWorkHours() {
   return hour >= 8 && hour < 18;
 }
 
-async function refreshLardiOrders() {
+async function refreshLardiOrders(force = false) {
   if (!LARDI_TOKEN) {
     console.log('[Lardi Refresh] Skipped — no LARDI_API_TOKEN');
     return { skipped: true, reason: 'no token' };
   }
-  if (!isBerlinWorkHours()) {
+  if (!force && !isBerlinWorkHours()) {
     const hour = new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', hour: 'numeric', hour12: false }).format(new Date());
     console.log(`[Lardi Refresh] Skipped — outside working hours (Berlin ${hour}:xx)`);
     return { skipped: true, reason: 'outside hours' };
@@ -966,9 +966,11 @@ setInterval(async () => {
 }, 60 * 60 * 1000);
 
 // Ручне оновлення через API (для тесту)
+// ?force=1 — пропустити перевірку часу
 app.post('/api/lardi/refresh', auth, async (req, res) => {
   try {
-    const result = await refreshLardiOrders();
+    const force = req.query.force === '1';
+    const result = await refreshLardiOrders(force);
     res.json({ ok: true, ...result });
   } catch (e) {
     res.status(500).json({ error: e.message });
