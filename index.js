@@ -856,6 +856,19 @@ async function syncLardiProposals() {
   return { synced, skipped: proposals.length - synced, total: proposals.length };
 }
 
+// Тимчасовий debug — показує сирий відповідь Lardi
+app.get('/api/lardi/raw-proposals', auth, async (req, res) => {
+  try {
+    const r = await fetch(`${LARDI_BASE}/proposals/my/cargoes/active?language=uk&size=5`, {
+      headers: { 'Authorization': LARDI_TOKEN }
+    });
+    const raw = await r.json();
+    res.json({ status: r.status, raw });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Ендпоінт ручної синхронізації
 app.post('/api/lardi/sync', auth, async (req, res) => {
   try {
