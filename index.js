@@ -48,7 +48,8 @@ async function initDb() {
   await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS posted_della BOOLEAN DEFAULT false`).catch(() => {});
   await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS last_refresh_lardi TIMESTAMP`).catch(() => {});
   await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS last_refresh_della TIMESTAMP`).catch(() => {});
-  await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS lardi_proposal_id INTEGER`).catch(() => {});
+  await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS lardi_proposal_id BIGINT`).catch(() => {});
+  await db.query(`ALTER TABLE orders ALTER COLUMN lardi_proposal_id TYPE BIGINT`).catch(() => {});
   await db.end();
   console.log('DB initialized');
 }
