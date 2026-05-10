@@ -859,11 +859,20 @@ async function syncLardiProposals() {
 // Тимчасовий debug — показує сирий відповідь Lardi
 app.get('/api/lardi/raw-proposals', auth, async (req, res) => {
   try {
-    const r = await fetch(`${LARDI_BASE}/proposals/my/cargoes/active?language=uk&size=5`, {
-      headers: { 'Authorization': LARDI_TOKEN }
-    });
-    const raw = await r.json();
-    res.json({ status: r.status, raw });
+    const st = req.query.status || 'active';
+    // Try both path-based and query-based variants
+    const urls = [
+      `${LARDI_BASE}/proposals/my/cargoes/${st}?language=uk&size=5`,
+      `${LARDI_BASE}/proposals/my/cargoes?status=${st}&language=uk&size=5`,
+      `${LARDI_BASE}/proposals/my?type=cargo&status=${st}&language=uk&size=5`,
+    ];
+    const results = [];
+    for (const url of urls) {
+      const r = await fetch(url, { headers: { 'Authorization': LARDI_TOKEN } });
+      const raw = await r.json();
+      results.push({ url, httpStatus: r.status, totalSize: raw?.paginator?.totalSize ?? raw?.total ?? '?', sample: JSON.stringify(raw).slice(0, 300) });
+    }
+    res.json(results);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
