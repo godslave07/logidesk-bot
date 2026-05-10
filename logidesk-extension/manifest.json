@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "LogiDesk",
+  "version": "1.6",
+  "description": "Автоматичне розміщення вантажних заявок на Lardi-Trans та Della.ua",
+  "permissions": ["storage", "tabs", "alarms", "notifications"],
+  "host_permissions": [
+    "https://lardi-trans.com/*",
+    "https://della.ua/*",
+    "https://logidesk-bot-production.up.railway.app/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    },
+    "default_title": "LogiDesk"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://lardi-trans.com/log/mygruztrans/v2/add/gruz/*"],
+      "js": ["content_lardi_bridge.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://lardi-trans.com/log/mygruztrans/v2/add/gruz/*"],
+      "js": ["content_lardi.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://della.ua/placecargo/*", "https://della.ua/addorder/*"],
+      "js": ["content_della.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://della.ua/my/*"],
+      "js": ["content_della_my.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}

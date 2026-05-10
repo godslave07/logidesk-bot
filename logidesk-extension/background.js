@@ -24,10 +24,58 @@ function persistAutoPostedIds() {
 // ===== ALARMS — надійний polling в MV3 =====
 // setInterval вбивається через 5 хв коли SW засинає. Alarms — ні.
 chrome.alarms.create('fetchOrders', { periodInMinutes: 0.5 });
+chrome.alarms.create('refreshDellaAuto', { periodInMinutes: 31 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'fetchOrders') fetchOrders();
+  if (alarm.name === 'refreshDellaAuto') maybeRefreshDella();
 });
+
+// ===== АВТО-ОНОВЛЕННЯ DELLA (8:00–18:00 за Берліном) =====
+function isBerlinWorkHours() {
+  const now = new Date();
+  const hour = Number(
+    new Intl.DateTimeFormat('de-DE', {
+      timeZone: 'Europe/Berlin',
+      hour: 'numeric',
+      hour12: false
+    }).format(now)
+  );
+  return hour >= 8 && hour < 18;
+}
+
+async function maybeRefreshDella() {
+  if (!isBerlinWorkHours()) {
+    console.log('[LogiDesk] Della auto-refresh skipped — outside working hours (Berlin 8:00–18:00)');
+    return;
+  }
+
+  console.log('[LogiDesk] Della auto-refresh triggered');
+
+  // Шукаємо вже відкриту вкладку della.ua/my/
+  const tabs = await chrome.tabs.query({ url: 'https://della.ua/my/*' });
+
+  if (tabs.length > 0) {
+    // Є відкрита вкладка — шлемо повідомлення напряму
+    chrome.tabs.sendMessage(tabs[0].id, { type: 'refresh_della_all' }, (resp) => {
+      console.log('[LogiDesk] Della auto-refresh result:', resp);
+    });
+  } else {
+    // Відкриваємо вкладку, чекаємо завантаження, потім шлемо
+    chrome.tabs.create({ url: 'https://della.ua/my/' }, (tab) => {
+      const listener = (tabId, changeInfo) => {
+        if (tabId !== tab.id || changeInfo.status !== 'complete') return;
+        chrome.tabs.onUpdated.removeListener(listener);
+        setTimeout(() => {
+          chrome.tabs.sendMessage(tab.id, { type: 'refresh_della_all' }, (resp) => {
+            console.log('[LogiDesk] Della auto-refresh result (new tab):', resp);
+          });
+        }, 3000);
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+    });
+  }
+}
 
 // ===== ОПРОС СЕРВЕРА =====
 async function fetchOrders() {
