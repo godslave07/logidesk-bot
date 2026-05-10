@@ -110,7 +110,7 @@ async function loadLardiRefs() {
 async function lookupLardiCity(cityName) {
   if (!LARDI_TOKEN || !cityName) return null;
   try {
-    const url = `${LARDI_BASE}/references/towns/by-name?query=${encodeURIComponent(cityName)}&countrySigns=UA&language=uk&limit=5`;
+    const url = `${LARDI_BASE}/references/towns?query=${encodeURIComponent(cityName)}&language=uk`;
     const res = await fetch(url, { headers: { 'Authorization': LARDI_TOKEN } });
     const data = await res.json();
     if (!Array.isArray(data) || !data.length) return null;
