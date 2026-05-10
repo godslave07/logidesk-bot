@@ -78,7 +78,7 @@ async function loadLardiRefs() {
   if (_lardiRefs && (Date.now() - _lardiRefsTs) < 3600000) return _lardiRefs;
 
   try {
-    const h = { 'Authorization': `Bearer ${LARDI_TOKEN}`, 'Content-Type': 'application/json' };
+    const h = { 'Authorization': LARDI_TOKEN, 'Content-Type': 'application/json' };
     const lang = 'uk';
     const get = url => fetch(url, { headers: h }).then(r => r.json());
 
@@ -111,7 +111,7 @@ async function lookupLardiCity(cityName) {
   if (!LARDI_TOKEN || !cityName) return null;
   try {
     const url = `${LARDI_BASE}/references/towns/by-name?query=${encodeURIComponent(cityName)}&countrySigns=UA&language=uk&limit=5`;
-    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${LARDI_TOKEN}` } });
+    const res = await fetch(url, { headers: { 'Authorization': LARDI_TOKEN } });
     const data = await res.json();
     if (!Array.isArray(data) || !data.length) return null;
     const lower = cityName.toLowerCase().trim();
@@ -287,7 +287,7 @@ async function postToLardiAPI(order) {
   const res = await fetch(`${LARDI_BASE}/proposals/my/add/cargo`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${LARDI_TOKEN}`,
+      'Authorization': LARDI_TOKEN,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
