@@ -16,7 +16,7 @@ const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const DATABASE_URL  = process.env.DATABASE_URL;
 const API_KEY       = process.env.API_KEY || 'logidesk2024';
 const PORT          = process.env.PORT || 3000;
-const LARDI_TOKEN   = process.env.LARDI_API_TOKEN;
+const LARDI_TOKEN   = process.env.LARDI_API_TOKEN || null;
 const LARDI_BASE    = 'https://api.lardi-trans.com/v2';
 
 const { Client } = require('pg');
