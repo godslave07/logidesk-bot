@@ -50,6 +50,25 @@ async function initDb() {
   await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS last_refresh_della TIMESTAMP`).catch(() => {});
   await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS lardi_proposal_id BIGINT`).catch(() => {});
   await db.query(`ALTER TABLE orders ALTER COLUMN lardi_proposal_id TYPE BIGINT`).catch(() => {});
+
+  // Очищуємо записи першої синхронізації (вона включала Лену) — при старті sync повторно
+  // імпортує тільки заявки Валентина завдяки фільтру owner.face
+  const deleted = await db.query(
+    `DELETE FROM orders WHERE chat_id = 0 AND data->>'_source' = 'lardi_sync'`
+  ).catch(() => ({ rowCount: 0 }));
+  if (deleted.rowCount > 0) {
+    console.log(`[DB Init] Cleaned up ${deleted.rowCount} old lardi_sync records (will re-import filtered)`);
+  }
+
+  // Скасовуємо тестові заявки бота (розміщені під час налагодження)
+  const cancelled = await db.query(
+    `UPDATE orders SET status = 'cancelled'
+     WHERE lardi_proposal_id IN (213524581561, 267071521718) AND status != 'cancelled'`
+  ).catch(() => ({ rowCount: 0 }));
+  if (cancelled.rowCount > 0) {
+    console.log(`[DB Init] Marked ${cancelled.rowCount} test bot orders as cancelled`);
+  }
+
   await db.end();
   console.log('DB initialized');
 }
@@ -829,6 +848,14 @@ async function syncLardiProposals() {
       console.warn('[Lardi Sync] Proposal has no id, keys:', Object.keys(p));
       continue;
     }
+
+    // Синхронізуємо тільки заявки Валентина (Герус В.В., ФЛ-П) — Лену пропускаємо
+    const ownerFace = p.owner?.face || p.ownerFace || '';
+    if (ownerFace === 'Лена') {
+      console.log(`[Lardi Sync] Skipping proposal #${propId} (owner: Лена)`);
+      continue;
+    }
+
     if (knownIds.has(propId)) continue; // вже є в БД
 
     // Витягуємо дані з пропозиції для зручного відображення
