@@ -59,6 +59,20 @@ async function initDb() {
 let _lardiRefs = null;
 let _lardiRefsTs = 0;
 
+// Lardi API may return arrays directly OR wrapped: {data:[...]}, {items:[...]}, {result:[...]}
+function extractArr(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (raw && Array.isArray(raw.data))   return raw.data;
+  if (raw && Array.isArray(raw.items))  return raw.items;
+  if (raw && Array.isArray(raw.result)) return raw.result;
+  // Some endpoints return a plain object map — convert to array
+  if (raw && typeof raw === 'object') {
+    const vals = Object.values(raw);
+    if (vals.length && typeof vals[0] === 'object') return vals;
+  }
+  return [];
+}
+
 async function loadLardiRefs() {
   if (!LARDI_TOKEN) return null;
   if (_lardiRefs && (Date.now() - _lardiRefsTs) < 3600000) return _lardiRefs;
@@ -68,7 +82,7 @@ async function loadLardiRefs() {
     const lang = 'uk';
     const get = url => fetch(url, { headers: h }).then(r => r.json());
 
-    const [bodyTypes, currencies, paymentMoments, paymentUnits, paymentTypes] = await Promise.all([
+    const [rawBody, rawCur, rawMoments, rawUnits, rawTypes] = await Promise.all([
       get(`${LARDI_BASE}/references/body/types?language=${lang}`),
       get(`${LARDI_BASE}/references/currencies?language=${lang}`),
       get(`${LARDI_BASE}/references/payment/moments?language=${lang}`),
@@ -76,7 +90,14 @@ async function loadLardiRefs() {
       get(`${LARDI_BASE}/references/payment/types?language=${lang}`),
     ]);
 
-    _lardiRefs = { bodyTypes, currencies, paymentMoments, paymentUnits, paymentTypes };
+    const bodyTypes     = extractArr(rawBody);
+    const currencies    = extractArr(rawCur);
+    const paymentMoments= extractArr(rawMoments);
+    const paymentUnits  = extractArr(rawUnits);
+    const paymentTypes  = extractArr(rawTypes);
+
+    _lardiRefs = { bodyTypes, currencies, paymentMoments, paymentUnits, paymentTypes,
+                   _raw: { rawBody, rawCur, rawMoments, rawUnits, rawTypes } };
     _lardiRefsTs = Date.now();
     console.log(`[Lardi] Refs loaded — body:${bodyTypes.length} cur:${currencies.length} moments:${paymentMoments.length} units:${paymentUnits.length} types:${paymentTypes.length}`);
     return _lardiRefs;
@@ -710,12 +731,17 @@ app.get('/api/lardi-status', auth, async (req, res) => {
       enabled: true,
       status: 'ok',
       refs: {
-        bodyTypes:     refs.bodyTypes.length,
-        currencies:    refs.currencies.map(c => `${c.id}=${c.name}`),
-        paymentMoments: refs.paymentMoments.map(m => `${m.id}=${m.name}`),
-        paymentUnits:  refs.paymentUnits.map(u => `${u.id}=${u.name}`),
-        paymentTypes:  refs.paymentTypes.map(t => `${t.id}=${t.name}`),
-        bodyTypesSample: refs.bodyTypes.slice(0, 20).map(b => `${b.id}=${b.name}`),
+        bodyTypes:      refs.bodyTypes.length,
+        currencies:     refs.currencies.map(c => `${c.id}=${c.name||c.sign||JSON.stringify(c)}`),
+        paymentMoments: refs.paymentMoments.map(m => `${m.id}=${m.name||JSON.stringify(m)}`),
+        paymentUnits:   refs.paymentUnits.map(u => `${u.id}=${u.name||JSON.stringify(u)}`),
+        paymentTypes:   refs.paymentTypes.map(t => `${t.id}=${t.name||JSON.stringify(t)}`),
+        bodyTypesSample: refs.bodyTypes.slice(0, 20).map(b => `${b.id}=${b.name||JSON.stringify(b)}`),
+      },
+      rawSample: {
+        currency0: refs._raw?.rawCur ? JSON.stringify(refs._raw.rawCur).slice(0, 300) : null,
+        moment0:   refs._raw?.rawMoments ? JSON.stringify(refs._raw.rawMoments).slice(0, 200) : null,
+        unit0:     refs._raw?.rawUnits ? JSON.stringify(refs._raw.rawUnits).slice(0, 200) : null,
       }
     });
   } catch (e) {
