@@ -794,20 +794,24 @@ async function syncLardiProposals() {
 
   console.log('[Lardi Sync] Fetching active proposals from Lardi API...');
 
-  const res = await fetch(`${LARDI_BASE}/proposals/my/cargoes/active?language=uk&size=100`, {
-    headers: { 'Authorization': LARDI_TOKEN }
-  });
+  // Збираємо заявки з двох статусів: published + confirmed
+  const fetchStatus = async (status) => {
+    const r = await fetch(`${LARDI_BASE}/proposals/my/cargoes/${status}?language=uk&size=100`, {
+      headers: { 'Authorization': LARDI_TOKEN }
+    });
+    if (!r.ok) { console.warn(`[Lardi Sync] Status ${status} → HTTP ${r.status}`); return []; }
+    const raw = await r.json();
+    return extractArr(raw.content ?? raw);
+  };
 
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Lardi API ${res.status}: ${txt.slice(0, 200)}`);
-  }
-
-  const raw = await res.json();
-  const proposals = extractArr(raw);
-  console.log(`[Lardi Sync] Got ${proposals.length} proposals from Lardi`);
+  const [published, confirmed] = await Promise.all([
+    fetchStatus('published'),
+    fetchStatus('confirmed'),
+  ]);
+  const proposals = [...published, ...confirmed];
+  console.log(`[Lardi Sync] Got ${proposals.length} proposals (published:${published.length} confirmed:${confirmed.length})`);
   if (proposals.length) console.log('[Lardi Sync] First proposal keys:', JSON.stringify(Object.keys(proposals[0])));
-  if (proposals.length) console.log('[Lardi Sync] First proposal sample:', JSON.stringify(proposals[0]).slice(0, 500));
+  if (proposals.length) console.log('[Lardi Sync] Sample:', JSON.stringify(proposals[0]).slice(0, 400));
 
   if (!proposals.length) return { synced: 0, total: 0 };
 
@@ -859,20 +863,12 @@ async function syncLardiProposals() {
 // Тимчасовий debug — показує сирий відповідь Lardi
 app.get('/api/lardi/raw-proposals', auth, async (req, res) => {
   try {
-    const st = req.query.status || 'active';
-    // Try both path-based and query-based variants
-    const urls = [
-      `${LARDI_BASE}/proposals/my/cargoes/${st}?language=uk&size=5`,
-      `${LARDI_BASE}/proposals/my/cargoes?status=${st}&language=uk&size=5`,
-      `${LARDI_BASE}/proposals/my?type=cargo&status=${st}&language=uk&size=5`,
-    ];
-    const results = [];
-    for (const url of urls) {
-      const r = await fetch(url, { headers: { 'Authorization': LARDI_TOKEN } });
-      const raw = await r.json();
-      results.push({ url, httpStatus: r.status, totalSize: raw?.paginator?.totalSize ?? raw?.total ?? '?', sample: JSON.stringify(raw).slice(0, 300) });
-    }
-    res.json(results);
+    const st = req.query.status || 'published';
+    const r = await fetch(`${LARDI_BASE}/proposals/my/cargoes/${st}?language=uk&size=5`, {
+      headers: { 'Authorization': LARDI_TOKEN }
+    });
+    const raw = await r.json();
+    res.json({ httpStatus: r.status, raw });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
