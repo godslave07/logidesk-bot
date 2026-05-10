@@ -788,6 +788,77 @@ app.post('/api/orders/:id/post-lardi', auth, async (req, res) => {
   }
 });
 
+// ===== СИНХРОНІЗАЦІЯ ЗАЯВОК З LARDI API =====
+async function syncLardiProposals() {
+  if (!LARDI_TOKEN) return { skipped: true, reason: 'no token' };
+
+  console.log('[Lardi Sync] Fetching active proposals from Lardi API...');
+
+  const res = await fetch(`${LARDI_BASE}/proposals/my/cargo?language=uk`, {
+    headers: { 'Authorization': LARDI_TOKEN }
+  });
+
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`Lardi API ${res.status}: ${txt.slice(0, 200)}`);
+  }
+
+  const raw = await res.json();
+  const proposals = extractArr(raw);
+  console.log(`[Lardi Sync] Got ${proposals.length} proposals from Lardi`);
+
+  if (!proposals.length) return { synced: 0, total: 0 };
+
+  const db = await getDb();
+
+  // Отримуємо всі вже відомі lardi_proposal_id
+  const existing = await db.query('SELECT lardi_proposal_id FROM orders WHERE lardi_proposal_id IS NOT NULL');
+  const knownIds = new Set(existing.rows.map(r => String(r.lardi_proposal_id)));
+
+  let synced = 0;
+  for (const p of proposals) {
+    const propId = String(p.id);
+    if (knownIds.has(propId)) continue; // вже є в БД
+
+    // Витягуємо дані з пропозиції для зручного відображення
+    const from = p.waypointListSource?.[0]?.townName || p.waypointListSource?.[0]?.address || '';
+    const to   = p.waypointListTarget?.[0]?.townName || p.waypointListTarget?.[0]?.address || '';
+    const data = {
+      from,
+      to,
+      cargoName:  p.contentName || '',
+      weight:     p.sizeMass    || '',
+      volume:     p.sizeVolume  || '',
+      price:      p.paymentValue || '',
+      truckType:  p.cargoBodyTypeIds ? 'Тент' : '',
+      _source:    'lardi_sync',
+    };
+
+    await db.query(
+      `INSERT INTO orders (chat_id, raw_text, data, status, posted_lardi, lardi_proposal_id, last_refresh_lardi)
+       VALUES ($1, $2, $3, 'active', true, $4, NOW())`,
+      [0, `Lardi sync: ${from} → ${to}`, JSON.stringify(data), propId]
+    );
+
+    synced++;
+    console.log(`[Lardi Sync] Imported proposal #${propId}: ${from} → ${to}`);
+  }
+
+  await db.end();
+  console.log(`[Lardi Sync] Done — imported ${synced} new, skipped ${proposals.length - synced} existing`);
+  return { synced, skipped: proposals.length - synced, total: proposals.length };
+}
+
+// Ендпоінт ручної синхронізації
+app.post('/api/lardi/sync', auth, async (req, res) => {
+  try {
+    const result = await syncLardiProposals();
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== АВТО-ОНОВЛЕННЯ LARDI (щогодини, 8:00–18:00 за Берліном) =====
 function isBerlinWorkHours() {
   const hour = Number(
@@ -889,5 +960,11 @@ app.get('/', (req, res) => res.send('LogiDesk ✅ | <a href="/dashboard">📊 Д
 
 // ===== СТАРТ =====
 initDb().then(() => {
-  app.listen(PORT, () => console.log(`LogiDesk started on port ${PORT}`));
+  app.listen(PORT, () => {
+    console.log(`LogiDesk started on port ${PORT}`);
+    // Синхронізуємо заявки з Lardi при старті
+    syncLardiProposals()
+      .then(r => console.log('[Lardi Sync] Startup sync:', r))
+      .catch(e => console.error('[Lardi Sync] Startup sync error:', e.message));
+  });
 });
