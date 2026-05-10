@@ -832,8 +832,8 @@ async function syncLardiProposals() {
     if (knownIds.has(propId)) continue; // вже є в БД
 
     // Витягуємо дані з пропозиції для зручного відображення
-    const from = p.waypointListSource?.[0]?.townName || p.waypointListSource?.[0]?.address || '';
-    const to   = p.waypointListTarget?.[0]?.townName || p.waypointListTarget?.[0]?.address || '';
+    const from = p.waypointListSource?.[0]?.town?.name || p.waypointListSource?.[0]?.address || '';
+    const to   = p.waypointListTarget?.[0]?.town?.name || p.waypointListTarget?.[0]?.address || '';
     const data = {
       from,
       to,
