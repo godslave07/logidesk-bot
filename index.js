@@ -794,7 +794,7 @@ async function syncLardiProposals() {
 
   console.log('[Lardi Sync] Fetching active proposals from Lardi API...');
 
-  const res = await fetch(`${LARDI_BASE}/proposals/my/cargo?language=uk`, {
+  const res = await fetch(`${LARDI_BASE}/proposals/my/cargoes/active?language=uk&size=100`, {
     headers: { 'Authorization': LARDI_TOKEN }
   });
 
