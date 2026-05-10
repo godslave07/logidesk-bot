@@ -759,6 +759,17 @@ app.post('/api/orders/:id/post-lardi', auth, async (req, res) => {
     if (!row.rows.length) return res.status(404).json({ error: 'Order not found' });
 
     const order = row.rows[0];
+    const debug = req.query.debug === '1';
+
+    // Debug: show cities and payload without posting
+    if (debug) {
+      const d = order.data;
+      const [fromCity, toCity] = await Promise.all([
+        lookupLardiCity(d.from), lookupLardiCity(d.to)
+      ]);
+      return res.json({ fromCity, toCity, orderData: d });
+    }
+
     const result = await postToLardiAPI({ id: order.id, data: order.data });
 
     if (result?.id) {
