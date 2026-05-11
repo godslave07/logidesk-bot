@@ -914,13 +914,12 @@ app.post('/api/lardi/sync', auth, async (req, res) => {
 
 // ===== АВТО-ОНОВЛЕННЯ LARDI (щогодини, 8:00–18:00 за Берліном) =====
 function isBerlinWorkHours() {
-  const hour = Number(
-    new Intl.DateTimeFormat('de-DE', {
-      timeZone: 'Europe/Berlin',
-      hour: 'numeric',
-      hour12: false
-    }).format(new Date())
-  );
+  const hourStr = new Intl.DateTimeFormat('de-DE', {
+    timeZone: 'Europe/Berlin',
+    hour: 'numeric',
+    hour12: false
+  }).format(new Date());
+  const hour = parseInt(hourStr, 10); // '12 Uhr' → 12, not NaN
   return hour >= 8 && hour < 18;
 }
 
