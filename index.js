@@ -988,15 +988,21 @@ async function refreshLardiOrders(force = false) {
   };
 }
 
-// Запускаємо перевірку кожні 60 хвилин
+// Запускаємо перевірку кожні 5 хвилин, але виконуємо не частіше ніж раз на 55 хвилин.
+// Так при редеплої Railway не чекаємо повну годину — оновлення відбудеться протягом 5 хв після старту.
+let _lastAutoRefresh = 0;
 setInterval(async () => {
+  if (!isBerlinWorkHours()) return;
+  const now = Date.now();
+  if (now - _lastAutoRefresh < 55 * 60 * 1000) return; // менше 55 хв від останнього запуску
+  _lastAutoRefresh = now;
   try {
     const result = await refreshLardiOrders();
     console.log('[Lardi Refresh] Scheduled result:', result);
   } catch (e) {
     console.error('[Lardi Refresh] Scheduled error:', e.message);
   }
-}, 60 * 60 * 1000);
+}, 5 * 60 * 1000); // перевіряємо кожні 5 хвилин
 
 // Ручне оновлення через API (для тесту)
 // ?force=1 — пропустити перевірку часу
@@ -1023,9 +1029,19 @@ app.get('/', (req, res) => res.send('LogiDesk ✅ | <a href="/dashboard">📊 Д
 initDb().then(() => {
   app.listen(PORT, () => {
     console.log(`LogiDesk started on port ${PORT}`);
-    // Синхронізуємо заявки з Lardi при старті
+
+    // Синхронізуємо заявки з Lardi при старті (імпортуємо невідомі пропозиції)
     syncLardiProposals()
       .then(r => console.log('[Lardi Sync] Startup sync:', r))
       .catch(e => console.error('[Lardi Sync] Startup sync error:', e.message));
+
+    // При старті сервера в робочий час — одразу запускаємо оновлення.
+    // Так редеплой не зміщує розклад оновлень.
+    if (isBerlinWorkHours()) {
+      _lastAutoRefresh = Date.now();
+      refreshLardiOrders()
+        .then(r => console.log('[Lardi Refresh] Startup refresh:', r))
+        .catch(e => console.error('[Lardi Refresh] Startup refresh error:', e.message));
+    }
   });
 });
