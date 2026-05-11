@@ -800,6 +800,43 @@ app.get('/api/lardi-status', auth, async (req, res) => {
   }
 });
 
+// Debug: показати payload без відправки (GET)
+app.get('/api/orders/:id/lardi-debug', auth, async (req, res) => {
+  try {
+    const db = await getDb();
+    const row = await db.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
+    await db.end();
+    if (!row.rows.length) return res.status(404).json({ error: 'Order not found' });
+    const order = row.rows[0];
+    const refs = await loadLardiRefs();
+    const d = order.data;
+    const [fromCity, toCity] = await Promise.all([lookupLardiCity(d.from), lookupLardiCity(d.to)]);
+    const today = new Date().toISOString().slice(0, 10);
+    const dateFromStr = parseISODate(d.dateFrom) || today;
+    const dateToStr   = parseISODate(d.dateTo)   || dateFromStr;
+    const toMs = iso => new Date(iso + 'T00:00:00Z').getTime();
+    const mkWp = (city) => {
+      if (!city) return { countrySign: 'UA' };
+      const wp = { townId: parseInt(city.id, 10) };
+      if (city.areaId)   wp.areaId   = parseInt(city.areaId,   10);
+      if (city.regionId) wp.regionId = parseInt(city.regionId, 10);
+      return wp;
+    };
+    const payload = {
+      dateFrom: toMs(dateFromStr), dateTo: toMs(dateToStr),
+      contentName: d.cargoName || d.cargo || '',
+      cargoBodyTypeIds: getBodyTypeIds(refs, d.truckType),
+      waypointListSource: [mkWp(fromCity)],
+      waypointListTarget: [mkWp(toCity)],
+    };
+    if (parseFloat(d.weight) > 0) payload.sizeMass = parseFloat(d.weight);
+    if (parseFloat(d.price)  > 0) { payload.paymentValue = parseFloat(d.price); payload.paymentCurrencyId = getCurrencyId(refs, d.currency); }
+    if (d.volume) payload.sizeVolume = parseFloat(d.volume);
+    res.json({ fromCity, toCity, payload, orderData: d,
+      bodyTypesSample: refs?.bodyTypes?.slice(0, 10).map(b => `${b.id}=${b.name}`) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Ручне розміщення заявки на Lardi
 app.post('/api/orders/:id/post-lardi', auth, async (req, res) => {
   try {
