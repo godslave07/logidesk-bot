@@ -280,8 +280,13 @@ async function postToLardiAPI(order) {
   const waypointTarget = [mkWaypoint(toCity, d.to)];
 
   const today     = new Date().toISOString().slice(0, 10);
-  const dateFrom  = parseISODate(d.dateFrom) || today;
-  const dateTo    = parseISODate(d.dateTo)   || dateFrom;
+  const dateFromStr = parseISODate(d.dateFrom) || today;
+  const dateToStr   = parseISODate(d.dateTo)   || dateFromStr;
+
+  // Lardi API очікує дати як Unix timestamp в мілісекундах (не рядок)
+  const toMs = iso => new Date(iso + 'T00:00:00Z').getTime();
+  const dateFrom = toMs(dateFromStr);
+  const dateTo   = toMs(dateToStr);
 
   const payload = {
     dateFrom,
