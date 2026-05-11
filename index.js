@@ -271,6 +271,8 @@ async function postToLardiAPI(order) {
     lookupLardiCity(d.from),
     lookupLardiCity(d.to),
   ]);
+  console.log('[Lardi API] fromCity:', JSON.stringify(fromCity));
+  console.log('[Lardi API] toCity:',   JSON.stringify(toCity));
 
   const mkWaypoint = (city, fallbackName) => {
     if (!city) return { address: fallbackName || '', countrySign: 'UA' };
@@ -494,7 +496,7 @@ app.post(`/webhook/${TOKEN}`, async (req, res) => {
         }
       } catch (le) {
         console.error('[Lardi API] Post error:', le.message);
-        lardiMsg = `\n⚠️ *Lardi API:* ${le.message.slice(0, 80)}`;
+        lardiMsg = `\n⚠️ *Lardi API:* ${le.message.slice(0, 250)}`;
       }
     }
 
