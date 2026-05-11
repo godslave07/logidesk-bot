@@ -288,13 +288,18 @@ async function postToLardiAPI(order) {
     dateTo,
     contentName:        d.cargoName || d.cargo || '',
     cargoBodyTypeIds:   getBodyTypeIds(refs, d.truckType),
-    paymentValue:       parseFloat(d.price) || 0,
-    paymentCurrencyId:  getCurrencyId(refs, d.currency),
     sizeMass:           parseFloat(d.weight) || 0,
     waypointListSource: waypointSource,
     waypointListTarget: waypointTarget,
     language: 'uk',
   };
+
+  // Ціна — передаємо тільки якщо вказана (0 відхиляється Lardi API з 400)
+  const priceVal = parseFloat(d.price);
+  if (priceVal > 0) {
+    payload.paymentValue      = priceVal;
+    payload.paymentCurrencyId = getCurrencyId(refs, d.currency);
+  }
 
   if (d.volume)          payload.sizeVolume      = parseFloat(d.volume);
   const momentId       = getPaymentMomentId(refs, d.paymentMoment);
