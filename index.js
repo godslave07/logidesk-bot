@@ -132,10 +132,17 @@ async function lookupLardiCity(cityName) {
   try {
     const url = `${LARDI_BASE}/references/towns?query=${encodeURIComponent(cityName)}&language=uk`;
     const res = await fetch(url, { headers: { 'Authorization': LARDI_TOKEN } });
-    const data = await res.json();
-    if (!Array.isArray(data) || !data.length) return null;
+    const raw  = await res.json();
+    // API може повернути масив або paginated об'єкт {content:[...]}
+    const list = Array.isArray(raw) ? raw : extractArr(raw.content ?? raw);
+    if (!list.length) {
+      console.warn('[Lardi] lookupLardiCity: no results for', cityName, '| raw:', JSON.stringify(raw).slice(0, 200));
+      return null;
+    }
     const lower = cityName.toLowerCase().trim();
-    return data.find(c => c.name.toLowerCase() === lower) || data[0];
+    const found = list.find(c => (c.name || '').toLowerCase() === lower) || list[0];
+    console.log('[Lardi] lookupLardiCity', cityName, '→', JSON.stringify(found));
+    return found;
   } catch (e) {
     console.error('[Lardi] lookupLardiCity error:', e.message);
     return null;
@@ -275,9 +282,14 @@ async function postToLardiAPI(order) {
   console.log('[Lardi API] toCity:',   JSON.stringify(toCity));
 
   const mkWaypoint = (city, fallbackName) => {
-    if (!city) return { address: fallbackName || '', countrySign: 'UA' };
-    const wp = { townId: city.id, countrySign: city.countrySign || 'UA' };
-    if (city.areaId)  wp.areaId  = city.areaId;
+    if (!city) {
+      // Fallback: без townId — мінімальна структура
+      return { countrySign: 'UA' };
+    }
+    // Lardi очікує Integer для townId та areaId — parseInt щоб не відправити рядок
+    const wp = { townId: parseInt(city.id, 10) };
+    if (city.areaId)  wp.areaId  = parseInt(city.areaId,  10);
+    if (city.regionId) wp.regionId = parseInt(city.regionId, 10);
     return wp;
   };
 
@@ -801,11 +813,34 @@ app.post('/api/orders/:id/post-lardi', auth, async (req, res) => {
 
     // Debug: show cities and payload without posting
     if (debug) {
+      const refs = await loadLardiRefs();
       const d = order.data;
       const [fromCity, toCity] = await Promise.all([
         lookupLardiCity(d.from), lookupLardiCity(d.to)
       ]);
-      return res.json({ fromCity, toCity, orderData: d });
+      // Build the same payload postToLardiAPI would build
+      const today = new Date().toISOString().slice(0, 10);
+      const dateFromStr = parseISODate(d.dateFrom) || today;
+      const dateToStr   = parseISODate(d.dateTo)   || dateFromStr;
+      const toMs = iso => new Date(iso + 'T00:00:00Z').getTime();
+      const mkWp = (city, fb) => {
+        if (!city) return { countrySign: 'UA' };
+        const wp = { townId: parseInt(city.id, 10) };
+        if (city.areaId)   wp.areaId   = parseInt(city.areaId,   10);
+        if (city.regionId) wp.regionId = parseInt(city.regionId, 10);
+        return wp;
+      };
+      const debugPayload = {
+        dateFrom: toMs(dateFromStr), dateTo: toMs(dateToStr),
+        contentName: d.cargoName || d.cargo || '',
+        cargoBodyTypeIds: getBodyTypeIds(refs, d.truckType),
+        waypointListSource: [mkWp(fromCity, d.from)],
+        waypointListTarget: [mkWp(toCity,   d.to)],
+      };
+      if (parseFloat(d.weight) > 0) debugPayload.sizeMass = parseFloat(d.weight);
+      if (parseFloat(d.price)  > 0) { debugPayload.paymentValue = parseFloat(d.price); debugPayload.paymentCurrencyId = getCurrencyId(refs, d.currency); }
+      if (d.volume) debugPayload.sizeVolume = parseFloat(d.volume);
+      return res.json({ fromCity, toCity, orderData: d, payload: debugPayload, refs: { bodyTypes: refs?.bodyTypes?.slice(0,5) } });
     }
 
     const result = await postToLardiAPI({ id: order.id, data: order.data });
