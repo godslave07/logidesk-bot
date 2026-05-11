@@ -272,9 +272,12 @@ async function postToLardiAPI(order) {
     lookupLardiCity(d.to),
   ]);
 
-  const mkWaypoint = (city, fallbackName) => city
-    ? { townId: city.id, areaId: city.areaId, countrySign: city.countrySign || 'UA' }
-    : { address: fallbackName || '', countrySign: 'UA' };
+  const mkWaypoint = (city, fallbackName) => {
+    if (!city) return { address: fallbackName || '', countrySign: 'UA' };
+    const wp = { townId: city.id, countrySign: city.countrySign || 'UA' };
+    if (city.areaId)  wp.areaId  = city.areaId;
+    return wp;
+  };
 
   const waypointSource = [mkWaypoint(fromCity, d.from)];
   const waypointTarget = [mkWaypoint(toCity, d.to)];
@@ -293,11 +296,13 @@ async function postToLardiAPI(order) {
     dateTo,
     contentName:        d.cargoName || d.cargo || '',
     cargoBodyTypeIds:   getBodyTypeIds(refs, d.truckType),
-    sizeMass:           parseFloat(d.weight) || 0,
     waypointListSource: waypointSource,
     waypointListTarget: waypointTarget,
-    language: 'uk',
   };
+
+  // Вага — передаємо тільки якщо > 0
+  const massVal = parseFloat(d.weight);
+  if (massVal > 0) payload.sizeMass = massVal;
 
   // Ціна — передаємо тільки якщо вказана (0 відхиляється Lardi API з 400)
   const priceVal = parseFloat(d.price);
@@ -315,7 +320,8 @@ async function postToLardiAPI(order) {
 
   console.log('[Lardi API] Posting:', JSON.stringify(payload));
 
-  const res = await fetch(`${LARDI_BASE}/proposals/my/add/cargo`, {
+  // language — query param, not body field
+  const res = await fetch(`${LARDI_BASE}/proposals/my/add/cargo?language=uk`, {
     method: 'POST',
     headers: {
       'Authorization': LARDI_TOKEN,
@@ -328,7 +334,7 @@ async function postToLardiAPI(order) {
   console.log('[Lardi API] Response:', JSON.stringify(result));
 
   if (!res.ok) {
-    throw new Error(`Lardi API ${res.status}: ${JSON.stringify(result).slice(0, 200)}`);
+    throw new Error(`Lardi API ${res.status}: ${JSON.stringify(result).slice(0, 500)}`);
   }
 
   return result; // { id: <proposal_id> }
