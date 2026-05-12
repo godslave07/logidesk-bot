@@ -283,12 +283,17 @@ async function postToLardiAPI(order) {
 
   const mkWaypoint = (city, fallbackName) => {
     if (!city) {
-      // Fallback: без townId — мінімальна структура
-      return { countrySign: 'UA' };
+      // Fallback: місто не знайдено — відправляємо назву текстом
+      return { address: fallbackName || '', countrySign: 'UA' };
     }
-    // Lardi очікує Integer для townId та areaId — parseInt щоб не відправити рядок
-    const wp = { townId: parseInt(city.id, 10) };
-    if (city.areaId)  wp.areaId  = parseInt(city.areaId,  10);
+    const townId = parseInt(city.id ?? city.townId, 10);
+    if (!townId || isNaN(townId)) {
+      // ID не вийшов — fallback на текст
+      console.warn('[Lardi API] mkWaypoint: invalid city.id:', city.id, '— using address fallback');
+      return { address: city.name || fallbackName || '', countrySign: 'UA' };
+    }
+    const wp = { townId };
+    if (city.areaId)   wp.areaId   = parseInt(city.areaId,   10);
     if (city.regionId) wp.regionId = parseInt(city.regionId, 10);
     return wp;
   };
