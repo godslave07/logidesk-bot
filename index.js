@@ -311,7 +311,7 @@ async function postToLardiAPI(order) {
   const payload = {
     dateFrom,
     dateTo,
-    contentName:        d.cargoName || d.cargo || '',
+    contentName:        d.cargoName || d.cargo || 'ТНВ',  // Lardi вимагає непорожнє поле
     cargoBodyTypeIds:   getBodyTypeIds(refs, d.truckType),
     waypointListSource: waypointSource,
     waypointListTarget: waypointTarget,
