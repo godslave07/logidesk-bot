@@ -575,7 +575,13 @@ app.get('/api/orders', auth, async (req, res) => {
 app.get('/api/orders/pending', auth, async (req, res) => {
   try {
     const db = await getDb();
-    const result = await db.query("SELECT * FROM orders WHERE status = 'new' ORDER BY created_at ASC");
+    // Pending = нові заявки АБО заявки де Lardi вже є (через API) але Della ще не виставлена
+    const result = await db.query(`
+      SELECT * FROM orders
+      WHERE status = 'new'
+         OR (status = 'active' AND posted_lardi = true AND posted_della = false)
+      ORDER BY created_at ASC
+    `);
     await db.end();
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
