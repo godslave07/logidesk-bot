@@ -332,7 +332,12 @@ async function postToLardiAPI(order) {
   // paymentForms — Lardi очікує [{id, vat: false}], не просто [id]
   const formIds = getPaymentFormIds(refs, d.paymentType);
   if (formIds)   payload.paymentForms = formIds.map(id => ({ id, vat: false }));
-  if (d.notes)   payload.note = d.notes;
+  // Збираємо нотатку: loadPlaces + unloadPlaces + notes
+  const noteParts = [];
+  if (parseInt(d.loadPlaces) > 1)   noteParts.push(`${d.loadPlaces} точки завантаження`);
+  if (parseInt(d.unloadPlaces) > 1) noteParts.push(`${d.unloadPlaces} точки розвантаження`);
+  if (d.notes) noteParts.push(d.notes);
+  if (noteParts.length) payload.note = noteParts.join('; ');
 
   console.log('[Lardi API] Posting:', JSON.stringify(payload));
 
@@ -373,7 +378,7 @@ async function parseCargo(text) {
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1000,
       system: `Ты парсер заявок на грузоперевозки. Сьогодні ${todayStr}. Из текста извлеки данные и верни ТОЛЬКО валидный JSON без markdown.
-Поля: from, fromCountry, to, toCountry, cargoName, weight (тонни), volume (м³), dateFrom (DD.MM.YYYY), dateTo (DD.MM.YYYY), truckType (Тент/Рефрижератор/Відкритий/Контейнер/Борт/Цистерна/Самоскид/Зерновоз/Автовоз/Критий), loadType (Повна/Часткова), price (число), currency (EUR/USD/UAH), paymentType (Готівка/Безнал/Картка), paymentMoment (після розвантаження/після завантаження/передоплата/часткова передоплата — витягуй з тексту коли/як відбувається оплата), phone, unloadPlaces (число точок розвантаження якщо більше 1, наприклад "2 розвантаження" → "2"; якщо не вказано — порожньо), notes (ТІЛЬКИ якщо є реальна примітка про вантаж — НЕ про оплату і НЕ про кількість точок розвантаження; інакше порожній рядок). Якщо поле не знайдено — порожній рядок. ВАЖЛИВО: якщо дата вказана як день тижня ("чт", "пт", "пн" тощо) — розрахуй конкретну дату DD.MM.YYYY відносно сьогодні (наступний такий день тижня). ТІЛЬКИ JSON.`,
+Поля: from, fromCountry, to, toCountry, cargoName, weight (тонни), volume (м³), dateFrom (DD.MM.YYYY), dateTo (DD.MM.YYYY), truckType (Тент/Рефрижератор/Відкритий/Контейнер/Борт/Цистерна/Самоскид/Зерновоз/Автовоз/Критий), loadType (Повна/Часткова), price (число), currency (EUR/USD/UAH), paymentType (Готівка/Безнал/Картка), paymentMoment (після розвантаження/після завантаження/передоплата/часткова передоплата — витягуй з тексту коли/як відбувається оплата), phone, loadPlaces (число точок завантаження якщо більше 1, наприклад "2 точки забору", "дві точки завантаження" → "2"; якщо не вказано — порожньо), unloadPlaces (число точок розвантаження якщо більше 1, наприклад "2 розвантаження" → "2"; якщо не вказано — порожньо), notes (ТІЛЬКИ якщо є реальна примітка про вантаж — НЕ про оплату і НЕ про кількість точок; інакше порожній рядок). Якщо поле не знайдено — порожній рядок. ВАЖЛИВО: якщо дата вказана як день тижня ("чт", "пт", "пн" тощо) — розрахуй конкретну дату DD.MM.YYYY відносно сьогодні (наступний такий день тижня). ТІЛЬКИ JSON.`,
       messages: [{ role: 'user', content: text }]
     })
   });
