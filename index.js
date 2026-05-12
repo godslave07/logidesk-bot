@@ -303,37 +303,36 @@ async function postToLardiAPI(order) {
   const dateFromStr = parseISODate(d.dateFrom) || today;
   const dateToStr   = parseISODate(d.dateTo)   || dateFromStr;
 
-  // Lardi API очікує дати як Unix timestamp в СЕКУНДАХ (не мілісекундах, не рядок)
-  const toSec = iso => Math.floor(new Date(iso + 'T00:00:00Z').getTime() / 1000);
-  const dateFrom = toSec(dateFromStr);
-  const dateTo   = toSec(dateToStr);
-
+  // Lardi API очікує дати як рядки yyyy-MM-dd (НЕ Unix timestamp!)
   const payload = {
-    dateFrom,
-    dateTo,
+    dateFrom:           dateFromStr,
+    dateTo:             dateToStr,
     contentName:        d.cargoName || d.cargo || 'ТНВ',  // Lardi вимагає непорожнє поле
     cargoBodyTypeIds:   getBodyTypeIds(refs, d.truckType),
     waypointListSource: waypointSource,
     waypointListTarget: waypointTarget,
+    sizeMass:           parseFloat(d.weight) > 0 ? parseFloat(d.weight) : 1, // required
   };
-
-  // Вага — передаємо тільки якщо > 0
-  const massVal = parseFloat(d.weight);
-  if (massVal > 0) payload.sizeMass = massVal;
 
   // Ціна — передаємо тільки якщо вказана (0 відхиляється Lardi API з 400)
   const priceVal = parseFloat(d.price);
   if (priceVal > 0) {
     payload.paymentValue      = priceVal;
     payload.paymentCurrencyId = getCurrencyId(refs, d.currency);
+    // paymentUnitId required when price set — шукаємо "рейс/trip" або перший доступний
+    const unitId = (refs?.paymentUnits?.find(u =>
+      ['рейс','trip','journey'].some(k => (u.name||'').toLowerCase().includes(k))
+    ) || refs?.paymentUnits?.[0])?.id || 2;
+    payload.paymentUnitId = unitId;
   }
 
-  if (d.volume)          payload.sizeVolume      = parseFloat(d.volume);
-  const momentId       = getPaymentMomentId(refs, d.paymentMoment);
-  if (momentId)          payload.paymentMomentId  = momentId;
-  const formIds        = getPaymentFormIds(refs, d.paymentType);
-  if (formIds)           payload.paymentForms     = formIds;
-  if (d.notes)           payload.note             = d.notes;
+  if (d.volume) payload.sizeVolume = parseFloat(d.volume);
+  const momentId = getPaymentMomentId(refs, d.paymentMoment);
+  if (momentId)  payload.paymentMomentId = momentId;
+  // paymentForms — Lardi очікує [{id, vat: false}], не просто [id]
+  const formIds = getPaymentFormIds(refs, d.paymentType);
+  if (formIds)   payload.paymentForms = formIds.map(id => ({ id, vat: false }));
+  if (d.notes)   payload.note = d.notes;
 
   console.log('[Lardi API] Posting:', JSON.stringify(payload));
 
