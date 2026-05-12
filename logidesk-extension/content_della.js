@@ -208,6 +208,18 @@ async function fillDellaForm(order) {
     }
   }
 
+  // === МІСЦЬ ЗАВАНТАЖЕННЯ (Місць завант.) ===
+  // Checkbox: request[extra][66], Value input: request[extra][66][value]
+  if (d.loadPlaces && parseInt(d.loadPlaces) > 1) {
+    const chkL = document.getElementById('request[extra][66]');
+    if (chkL && !chkL.checked) {
+      chkL.checked = true;
+      chkL.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    setVal(document.getElementById('request[extra][66][value]'), String(d.loadPlaces));
+    console.log('[LogiDesk Della] Місць завант. set to:', d.loadPlaces);
+  }
+
   // === МІСЦЬ ВИВАНТАЖЕННЯ (Місць вивант.) ===
   // Checkbox: request[extra][67][checked], Value input: request[extra][67][value]
   if (d.unloadPlaces && parseInt(d.unloadPlaces) > 1) {
@@ -223,15 +235,22 @@ async function fillDellaForm(order) {
   // === NOTES ===
   setVal(document.querySelector('textarea[name="request[memo]"]'), d.notes);
 
-  // === DATE ===
-  if (d.dateFrom) {
-    // Convert YYYY-MM-DD → DD.MM.YYYY if needed
-    let date = d.dateFrom;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      const [y, m, day] = date.split('-');
-      date = `${day}.${m}.${y}`;
+  // === DATES ===
+  function toDellaDate(str) {
+    if (!str) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+      const [y, m, day] = str.split('-');
+      return `${day}.${m}.${y}`;
     }
-    setVal(document.getElementById('CalendarDateFrom'), date);
+    if (/^\d{2}\.\d{2}\.\d{4}$/.test(str)) return str;
+    return null;
+  }
+  if (d.dateFrom) {
+    const df = toDellaDate(d.dateFrom);
+    if (df) setVal(document.getElementById('CalendarDateFrom'), df);
+    // dateTo: якщо не вказано — ставимо те саме що dateFrom (щоб не залишати сьогоднішню дату)
+    const dt = toDellaDate(d.dateTo || d.dateFrom);
+    if (dt) setVal(document.getElementById('CalendarDateTo'), dt);
   }
 
   console.log('[LogiDesk Della] Form filled ✅ — submitting in 3s...');
