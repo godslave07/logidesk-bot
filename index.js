@@ -507,7 +507,7 @@ app.post(`/webhook/${TOKEN}`, async (req, res) => {
         if (lardiResult?.id) {
           const db2 = await getDb();
           await db2.query(
-            'UPDATE orders SET posted_lardi = true, lardi_proposal_id = $1, last_refresh_lardi = NOW() WHERE id = $2',
+            'UPDATE orders SET posted_lardi = true, lardi_proposal_id = $1, last_refresh_lardi = NOW(), status = \'active\' WHERE id = $2',
             [lardiResult.id, orderId]
           );
           await db2.end();
@@ -902,7 +902,7 @@ app.post('/api/orders/:id/post-lardi', auth, async (req, res) => {
     if (result?.id) {
       const db2 = await getDb();
       await db2.query(
-        'UPDATE orders SET posted_lardi = true, lardi_proposal_id = $1, last_refresh_lardi = NOW() WHERE id = $2',
+        "UPDATE orders SET posted_lardi = true, lardi_proposal_id = $1, last_refresh_lardi = NOW(), status = 'active' WHERE id = $2",
         [result.id, order.id]
       );
       await db2.end();
@@ -1043,7 +1043,7 @@ async function refreshLardiOrders(force = false) {
 
   const db = await getDb();
   const result = await db.query(
-    "SELECT id, lardi_proposal_id FROM orders WHERE status = 'active' AND posted_lardi = true AND lardi_proposal_id IS NOT NULL"
+    "SELECT id, lardi_proposal_id FROM orders WHERE status NOT IN ('cancelled','done','archived') AND posted_lardi = true AND lardi_proposal_id IS NOT NULL"
   );
   await db.end();
 
