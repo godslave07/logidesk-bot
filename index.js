@@ -292,10 +292,8 @@ async function postToLardiAPI(order) {
       console.warn('[Lardi API] mkWaypoint: invalid city.id:', city.id, '— using address fallback');
       return { address: city.name || fallbackName || '', countrySign: 'UA' };
     }
-    const wp = { townId };
-    if (city.areaId)   wp.areaId   = parseInt(city.areaId,   10);
-    if (city.regionId) wp.regionId = parseInt(city.regionId, 10);
-    return wp;
+    // Передаємо тільки townId — areaId не потрібен і може конфліктувати
+    return { townId };
   };
 
   const waypointSource = [mkWaypoint(fromCity, d.from)];
@@ -821,11 +819,10 @@ app.get('/api/orders/:id/lardi-debug', auth, async (req, res) => {
     const dateToStr   = parseISODate(d.dateTo)   || dateFromStr;
     const toMs = iso => new Date(iso + 'T00:00:00Z').getTime();
     const mkWp = (city) => {
-      if (!city) return { countrySign: 'UA' };
-      const wp = { townId: parseInt(city.id, 10) };
-      if (city.areaId)   wp.areaId   = parseInt(city.areaId,   10);
-      if (city.regionId) wp.regionId = parseInt(city.regionId, 10);
-      return wp;
+      if (!city) return { address: '', countrySign: 'UA' };
+      const townId = parseInt(city.id ?? city.townId, 10);
+      if (!townId || isNaN(townId)) return { address: city.name || '', countrySign: 'UA' };
+      return { townId }; // тільки townId, без areaId
     };
     const payload = {
       dateFrom: toMs(dateFromStr), dateTo: toMs(dateToStr),
@@ -837,8 +834,19 @@ app.get('/api/orders/:id/lardi-debug', auth, async (req, res) => {
     if (parseFloat(d.weight) > 0) payload.sizeMass = parseFloat(d.weight);
     if (parseFloat(d.price)  > 0) { payload.paymentValue = parseFloat(d.price); payload.paymentCurrencyId = getCurrencyId(refs, d.currency); }
     if (d.volume) payload.sizeVolume = parseFloat(d.volume);
+    const momentId = getPaymentMomentId(refs, d.paymentMoment);
+    if (momentId) payload.paymentMomentId = momentId;
+    const formIds = getPaymentFormIds(refs, d.paymentType);
+    if (formIds) payload.paymentForms = formIds;
+    if (d.notes) payload.note = d.notes;
     res.json({ fromCity, toCity, payload, orderData: d,
-      bodyTypesSample: refs?.bodyTypes?.slice(0, 10).map(b => `${b.id}=${b.name}`) });
+      refs: {
+        paymentMoments: refs?.paymentMoments?.map(m => `${m.id}=${m.name}`),
+        paymentTypes:   refs?.paymentTypes?.map(t => `${t.id}=${t.name}`),
+        currencies:     refs?.currencies?.map(c => `${c.id}=${c.name||c.sign}`),
+        bodyTypesSample: refs?.bodyTypes?.slice(0, 10).map(b => `${b.id}=${b.name}`),
+      }
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
