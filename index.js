@@ -1182,6 +1182,117 @@ async function loadImportedLardiIds() {
   }
 }
 
+// ===== СЕРВЕРНИЙ ІМПОРТ ЧУЖИХ ЗАЯВОК З LARDI (API, без браузера) =====
+async function importLardiOrders() {
+  if (!LARDI_TOKEN) return;
+
+  try {
+    // Пошук вантажних пропозицій: Україна → Україна, гривня
+    const searchBody = {
+      waypointListSource: [{ countrySign: 'UA' }],
+      waypointListTarget: [{ countrySign: 'UA' }],
+      paymentCurrencyId: 2,  // UAH
+      size: 100,
+      page: 0,
+    };
+
+    const res = await fetch(`${LARDI_BASE}/proposals/search/cargo?language=uk`, {
+      method: 'POST',
+      headers: { 'Authorization': LARDI_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify(searchBody),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.error(`[Lardi Import] Search API error: HTTP ${res.status} ${errText.slice(0, 200)}`);
+      return;
+    }
+
+    const raw = await res.json();
+    const proposals = extractArr(raw.content ?? raw);
+    if (!proposals.length) return;
+
+    // Завантажуємо поточні власні lardi_proposal_id та вже імпортовані source_lardi_id прямо з БД
+    // (не з кешу — щоб виключення завжди було актуальним)
+    const db = await getDb();
+    const [ownRes, importedRes] = await Promise.all([
+      db.query('SELECT lardi_proposal_id FROM orders WHERE lardi_proposal_id IS NOT NULL'),
+      db.query('SELECT source_lardi_id    FROM orders WHERE source_lardi_id    IS NOT NULL'),
+    ]);
+    const ownIds      = new Set(ownRes.rows.map(r => String(r.lardi_proposal_id)));
+    const importedIds = new Set(importedRes.rows.map(r => String(r.source_lardi_id)));
+    // Оновлюємо in-memory set (на випадок якщо він не встиг завантажитись при старті)
+    importedRes.rows.forEach(r => _importedLardiIds.add(String(r.source_lardi_id)));
+
+    let imported = 0;
+    for (const p of proposals) {
+      // ID пропозиції — пробуємо всі відомі поля
+      const propId = String(p.id ?? p.cargoId ?? p.proposalId ?? p.offerId ?? '');
+      if (!propId || propId === 'undefined' || propId === 'null') continue;
+
+      // Пропускаємо власні заявки та вже імпортовані
+      if (ownIds.has(propId))      continue;
+      if (importedIds.has(propId)) continue;
+
+      // Тільки гривня
+      const currencyId = p.payment?.currencyId ?? p.paymentCurrencyId ?? 0;
+      if (currencyId && currencyId !== 2) continue;
+
+      // Мінімальна ціна 5000 грн
+      const price = parseFloat(p.payment?.price ?? p.paymentValue ?? 0);
+      if (!price || price < 5000) continue;
+
+      const from = p.waypointListSource?.[0]?.town?.name || p.waypointListSource?.[0]?.address || '';
+      const to   = p.waypointListTarget?.[0]?.town?.name || p.waypointListTarget?.[0]?.address || '';
+      if (!from || !to) continue;
+
+      const dellaPrice = price - 500;
+      const data = {
+        from,
+        to,
+        cargoName:  p.contentName || 'ТНВ',
+        weight:     p.sizeMass    || '',
+        volume:     p.sizeVolume  || '',
+        price:      dellaPrice,
+        currency:   'UAH',
+        dateFrom:   p.dateFrom    || '',
+        _source:    'lardi_import',
+        _origPrice: price,
+        _lardiId:   propId,
+      };
+
+      try {
+        const r = await db.query(
+          `INSERT INTO orders (chat_id, raw_text, data, status, posted_lardi, posted_della, source_lardi_id, created_at)
+           VALUES ($1, $2, $3, 'active', true, false, $4, NOW())
+           ON CONFLICT (source_lardi_id) WHERE source_lardi_id IS NOT NULL DO NOTHING
+           RETURNING id`,
+          [0, `Lardi import: ${from} → ${to} (${price} UAH)`, JSON.stringify(data), propId]
+        );
+        if (r.rowCount > 0) {
+          _importedLardiIds.add(propId);
+          importedIds.add(propId);
+          imported++;
+          console.log(`[Lardi Import] #${propId}: ${from} → ${to}, ${price}→${dellaPrice} UAH`);
+        }
+      } catch (e) {
+        if (e.code !== '23505') console.error('[Lardi Import] Insert error:', e.message);
+      }
+    }
+
+    await db.end();
+    if (imported > 0) console.log(`[Lardi Import] Done — imported ${imported} new out of ${proposals.length}`);
+
+  } catch (e) {
+    console.error('[Lardi Import] Error:', e.message);
+  }
+}
+
+// Запускаємо кожну хвилину
+setInterval(() => {
+  importLardiOrders().catch(e => console.error('[Lardi Import] Interval error:', e.message));
+}, 60 * 1000);
+
 // Ендпоінт для прийому пропозицій які скрейпнуло розширення зі сторінки пошуку Lardi
 app.post('/api/import/proposals', auth, async (req, res) => {
   const { proposals } = req.body;
@@ -1281,6 +1392,11 @@ initDb().then(() => {
     loadImportedLardiIds()
       .then(() => console.log('[Lardi Import] Dedup IDs loaded'))
       .catch(e => console.error('[Lardi Import] loadImportedLardiIds error:', e.message));
+
+    // Перший імпорт чужих заявок — через 10 сек після старту
+    setTimeout(() => {
+      importLardiOrders().catch(e => console.error('[Lardi Import] Startup error:', e.message));
+    }, 10000);
 
     // При старті сервера в робочий час — одразу запускаємо оновлення.
     // Так редеплой не зміщує розклад оновлень.
