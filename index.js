@@ -1041,7 +1041,8 @@ app.get('/api/lardi/raw-proposals', auth, async (req, res) => {
 });
 
 // ===== DEBUG: що повертає пошук Lardi і чому не імпортується =====
-app.get('/api/lardi/import-debug', auth, async (req, res) => {
+app.get('/api/lardi/import-debug', async (req, res) => {
+  if (req.headers['x-api-key'] !== API_KEY && req.query.key !== API_KEY) return res.status(401).json({ error: 'Unauthorized' });
   if (!LARDI_TOKEN) return res.json({ error: 'LARDI_TOKEN not set' });
   try {
     const searchBody = {
