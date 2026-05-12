@@ -453,7 +453,7 @@ app.post(`/webhook/${TOKEN}`, async (req, res) => {
 
   // Команди
   if (text === '/start') {
-    return sendMessage(chatId, `👋 *Ласкаво просимо до LogiDesk!*\n\nПишіть заявку в будь-якій формі:\n\n_Львів → Одеса, 0.7 т, в паллеті, тент, 8000 грн нал, +380999..._\n\n📋 Команди:\n/list — активні заявки\n/stats — статистика\n/dashboard — посилання на дашборд`);
+    return sendMessage(chatId, `👋 *Ласкаво просимо до LogiDesk!*\n\nПишіть заявку в будь-якій формі:\n\n_Львів → Одеса, 0.7 т, в паллеті, тент, 8000 грн нал, +380999..._\n\n📋 Команди:\n/list — активні заявки\n/stats — статистика\n/dashboard — посилання на дашборд\n/оновити — оновити заявки на Lardi зараз`);
   }
 
   if (text === '/list') {
@@ -489,6 +489,25 @@ app.post(`/webhook/${TOKEN}`, async (req, res) => {
 
   if (text === '/dashboard') {
     return sendMessage(chatId, `📊 *Дашборд LogiDesk:*\n\nhttps://logidesk-bot-production.up.railway.app/dashboard`);
+  }
+
+  if (text === '/оновити') {
+    await sendMessage(chatId, '🔄 Оновлюю заявки на Lardi...');
+    try {
+      const result = await refreshLardiOrders(true); // force=true — ігноруємо часові обмеження
+      if (result.skipped) {
+        return sendMessage(chatId, `⏸ Оновлення пропущено: ${result.reason}`);
+      }
+      if (result.refreshed === 0 && result.attempted === 0) {
+        return sendMessage(chatId, '📋 Немає активних заявок на Lardi для оновлення.');
+      }
+      const errText = result.errors?.length
+        ? `\n⚠️ Помилки: ${result.errors.length}`
+        : '';
+      return sendMessage(chatId, `✅ Оновлено ${result.success} з ${result.attempted} заявок на Lardi.${errText}`);
+    } catch (e) {
+      return sendMessage(chatId, `❌ Помилка оновлення: ${e.message.slice(0, 100)}`);
+    }
   }
 
   // Парсинг нової заявки
@@ -1047,7 +1066,7 @@ async function refreshLardiOrders(force = false) {
 
   const db = await getDb();
   const result = await db.query(
-    "SELECT id, lardi_proposal_id FROM orders WHERE status NOT IN ('cancelled','done','archived') AND posted_lardi = true AND lardi_proposal_id IS NOT NULL"
+    "SELECT id, chat_id, lardi_proposal_id FROM orders WHERE status NOT IN ('cancelled','done','archived') AND posted_lardi = true AND lardi_proposal_id IS NOT NULL"
   );
   await db.end();
 
@@ -1089,6 +1108,18 @@ async function refreshLardiOrders(force = false) {
     }
     await db2.end();
     console.log(`[Lardi Refresh] Updated last_refresh_lardi for ${successIds.length} orders`);
+
+    // Telegram notification to all unique chat_ids of refreshed orders
+    const refreshedPropIds = new Set(successIds.map(Number));
+    const chatIds = [...new Set(
+      result.rows
+        .filter(r => refreshedPropIds.has(Number(r.lardi_proposal_id)) && r.chat_id)
+        .map(r => r.chat_id)
+    )];
+    const timeStr = new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin' });
+    for (const cid of chatIds) {
+      sendMessage(cid, `🔄 *Lardi:* оновлено ${successIds.length} заявок (${timeStr})`).catch(() => {});
+    }
   }
 
   return {
@@ -1098,13 +1129,13 @@ async function refreshLardiOrders(force = false) {
   };
 }
 
-// Запускаємо перевірку кожні 5 хвилин, але виконуємо не частіше ніж раз на 55 хвилин.
+// Запускаємо перевірку кожні 5 хвилин, але виконуємо не частіше ніж раз на 30 хвилин.
 // Так при редеплої Railway не чекаємо повну годину — оновлення відбудеться протягом 5 хв після старту.
 let _lastAutoRefresh = 0;
 setInterval(async () => {
   if (!isBerlinWorkHours()) return;
   const now = Date.now();
-  if (now - _lastAutoRefresh < 55 * 60 * 1000) return; // менше 55 хв від останнього запуску
+  if (now - _lastAutoRefresh < 30 * 60 * 1000) return; // менше 30 хв від останнього запуску
   _lastAutoRefresh = now;
   try {
     const result = await refreshLardiOrders();
