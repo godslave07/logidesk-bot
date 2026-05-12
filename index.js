@@ -1040,6 +1040,64 @@ app.get('/api/lardi/raw-proposals', auth, async (req, res) => {
   }
 });
 
+// ===== DEBUG: що повертає пошук Lardi і чому не імпортується =====
+app.get('/api/lardi/import-debug', auth, async (req, res) => {
+  if (!LARDI_TOKEN) return res.json({ error: 'LARDI_TOKEN not set' });
+  try {
+    const searchBody = {
+      waypointListSource: [{ countrySign: 'UA' }],
+      waypointListTarget: [{ countrySign: 'UA' }],
+      paymentCurrencyId: 2,
+      size: 10, page: 0,
+    };
+    const r = await fetch(`${LARDI_BASE}/proposals/search/cargo?language=uk`, {
+      method: 'POST',
+      headers: { 'Authorization': LARDI_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify(searchBody),
+    });
+    const rawText = await r.text();
+    let parsed = null;
+    try { parsed = JSON.parse(rawText); } catch (_) {}
+    const proposals = extractArr(parsed?.content ?? parsed ?? []);
+
+    // Для кожної пропозиції показуємо ключові поля
+    const db = await getDb();
+    const ownRes = await db.query('SELECT lardi_proposal_id FROM orders WHERE lardi_proposal_id IS NOT NULL');
+    const importedRes = await db.query('SELECT source_lardi_id FROM orders WHERE source_lardi_id IS NOT NULL');
+    await db.end();
+    const ownIds      = new Set(ownRes.rows.map(r2 => String(r2.lardi_proposal_id)));
+    const importedIds = new Set(importedRes.rows.map(r2 => String(r2.source_lardi_id)));
+
+    const debug = proposals.slice(0, 5).map(p => {
+      const propId = String(p.id ?? p.cargoId ?? p.proposalId ?? '');
+      const price  = p.payment?.price ?? p.paymentValue ?? p.payment?.value ?? null;
+      const currId = p.payment?.currencyId ?? p.paymentCurrencyId ?? null;
+      return {
+        id: propId,
+        isOwn:     ownIds.has(propId),
+        imported:  importedIds.has(propId),
+        price,
+        currencyId: currId,
+        from: p.waypointListSource?.[0]?.town?.name || p.waypointListSource?.[0]?.address,
+        to:   p.waypointListTarget?.[0]?.town?.name || p.waypointListTarget?.[0]?.address,
+        allKeys: Object.keys(p),
+        paymentObj: p.payment || null,
+      };
+    });
+
+    res.json({
+      httpStatus: r.status,
+      totalFound: proposals.length,
+      ownIdsCount: ownIds.size,
+      importedIdsCount: importedIds.size,
+      sample: debug,
+      rawSnippet: rawText.slice(0, 500),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Ендпоінт ручної синхронізації
 app.post('/api/lardi/sync', auth, async (req, res) => {
   try {
