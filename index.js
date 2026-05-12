@@ -303,10 +303,10 @@ async function postToLardiAPI(order) {
   const dateFromStr = parseISODate(d.dateFrom) || today;
   const dateToStr   = parseISODate(d.dateTo)   || dateFromStr;
 
-  // Lardi API очікує дати як Unix timestamp в мілісекундах (не рядок)
-  const toMs = iso => new Date(iso + 'T00:00:00Z').getTime();
-  const dateFrom = toMs(dateFromStr);
-  const dateTo   = toMs(dateToStr);
+  // Lardi API очікує дати як Unix timestamp в СЕКУНДАХ (не мілісекундах, не рядок)
+  const toSec = iso => Math.floor(new Date(iso + 'T00:00:00Z').getTime() / 1000);
+  const dateFrom = toSec(dateFromStr);
+  const dateTo   = toSec(dateToStr);
 
   const payload = {
     dateFrom,
@@ -359,6 +359,10 @@ async function postToLardiAPI(order) {
 
 // ===== ПАРСЕР =====
 async function parseCargo(text) {
+  // Сьогоднішня дата для парсера — щоб він міг розрахувати "чт", "пн", "наступна п'ятниця" тощо
+  const today = new Date();
+  const todayStr = today.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: 'numeric' }); // DD.MM.YYYY
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -369,8 +373,8 @@ async function parseCargo(text) {
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1000,
-      system: `Ты парсер заявок на грузоперевозки. Из текста извлеки данные и верни ТОЛЬКО валидный JSON без markdown.
-Поля: from, fromCountry, to, toCountry, cargoName, weight (тонни), volume (м³), dateFrom (DD.MM.YYYY), dateTo (DD.MM.YYYY), truckType (Тент/Рефрижератор/Відкритий/Контейнер/Борт/Цистерна/Самоскид/Зерновоз/Автовоз/Критий), loadType (Повна/Часткова), price (число), currency (EUR/USD/UAH), paymentType (Готівка/Безнал/Картка), paymentMoment (після розвантаження/після завантаження/передоплата/часткова передоплата — витягуй з тексту коли/як відбувається оплата), phone, unloadPlaces (число точок розвантаження якщо більше 1, наприклад "2 розвантаження" → "2"; якщо не вказано — порожньо), notes (ТІЛЬКИ якщо є реальна примітка про вантаж — НЕ про оплату і НЕ про кількість точок розвантаження; інакше порожній рядок). Якщо поле не знайдено — порожній рядок. ТІЛЬКИ JSON.`,
+      system: `Ты парсер заявок на грузоперевозки. Сьогодні ${todayStr}. Из текста извлеки данные и верни ТОЛЬКО валидный JSON без markdown.
+Поля: from, fromCountry, to, toCountry, cargoName, weight (тонни), volume (м³), dateFrom (DD.MM.YYYY), dateTo (DD.MM.YYYY), truckType (Тент/Рефрижератор/Відкритий/Контейнер/Борт/Цистерна/Самоскид/Зерновоз/Автовоз/Критий), loadType (Повна/Часткова), price (число), currency (EUR/USD/UAH), paymentType (Готівка/Безнал/Картка), paymentMoment (після розвантаження/після завантаження/передоплата/часткова передоплата — витягуй з тексту коли/як відбувається оплата), phone, unloadPlaces (число точок розвантаження якщо більше 1, наприклад "2 розвантаження" → "2"; якщо не вказано — порожньо), notes (ТІЛЬКИ якщо є реальна примітка про вантаж — НЕ про оплату і НЕ про кількість точок розвантаження; інакше порожній рядок). Якщо поле не знайдено — порожній рядок. ВАЖЛИВО: якщо дата вказана як день тижня ("чт", "пт", "пн" тощо) — розрахуй конкретну дату DD.MM.YYYY відносно сьогодні (наступний такий день тижня). ТІЛЬКИ JSON.`,
       messages: [{ role: 'user', content: text }]
     })
   });
