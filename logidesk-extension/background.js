@@ -188,8 +188,14 @@ async function fetchOrders() {
     }).catch(() => {});
 
     // ===== АВТО-РОЗМІЩЕННЯ НОВИХ ЗАЯВОК =====
+    // Авто-постимо на Della ТІЛЬКИ імпортовані заявки (з Lardi scraper/import)
+    // Власні заявки користувача НЕ чіпаємо — їх він виставляє сам
     let autoPostDelay = 0;
     for (const order of pendingOrders) {
+      const source = order.data?._source || '';
+      const isImported = source === 'lardi_import' || source === 'lardi_scrape';
+      if (!isImported) continue; // пропускаємо власні заявки
+
       if (!autoPostedIds.has(order.id)) {
         autoPostedIds.add(order.id);
         persistAutoPostedIds();
