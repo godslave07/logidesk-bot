@@ -29,14 +29,24 @@ async function scrapeLardiSearch() {
   }
 
   // ===== Attempt 1: table rows (classic + new Lardi) =====
-  const tableRows = document.querySelectorAll(
+  // First try specific selectors, then fall back to ALL tr rows with enough cells
+  let tableRows = Array.from(document.querySelectorAll(
     'tr[data-id], tr[data-cargo], tr.trHover, tr[class*="cargo"], tr[class*="Cargo"]'
-  );
-  if (tableRows.length) {
-    console.log(`[LogiDesk Search] Attempt1: ${tableRows.length} table rows`);
-    for (const row of tableRows) {
-      addUnique(parseTableRow(row));
-    }
+  ));
+
+  // If no specific rows found — try ALL tr that look like data rows (5+ cells, has price)
+  if (!tableRows.length) {
+    tableRows = Array.from(document.querySelectorAll('tr')).filter(tr => {
+      const cells = tr.querySelectorAll('td');
+      if (cells.length < 5) return false;
+      const text = tr.innerText || '';
+      return /\d[\d\s]{2,8}\s*(грн|UAH)/i.test(text) || /₴\s*\d/.test(text);
+    });
+  }
+
+  console.log(`[LogiDesk Search] Attempt1: ${tableRows.length} table rows`);
+  for (const row of tableRows) {
+    addUnique(parseTableRow(row));
   }
 
   // ===== Attempt 2: card/item elements (React UI) =====
@@ -75,7 +85,7 @@ async function scrapeLardiSearch() {
     }
   }
 
-  console.log(`[LogiDesk Search] Total extracted: ${proposals.length}`);
+  console.log(`[LogiDesk Search] Total extracted: ${proposals.length}`, proposals.map(p => `${p.from}→${p.to} ${p.price}грн`));
   return proposals;
 }
 
