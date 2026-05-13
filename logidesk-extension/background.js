@@ -6,27 +6,33 @@ let pendingOrders = [];
 let activeOrders = [];
 
 // Черга на авто-розміщення Della: orderId → order
-// Della відкривається тільки після отримання mark_posted від Lardi
 const pendingDellaMap = new Map();
 
 // IDs заявок що вже були авто-розміщені.
-// Зберігаємо в session storage — не втрачаємо при перезапуску SW.
 const autoPostedIds = new Set();
 
+// Відстеження відкритих форм-вкладок: tabId → { orderId, platform, fallbackTimer }
+const formTabsMap = new Map();
+
+// ===== ЗАВАНТАЖЕННЯ autoPostedIds + СТАРТ =====
+// ВАЖЛИВО: fetchOrders викликається тільки ПІСЛЯ того як autoPostedIds завантажено,
+// інакше при перезапуску SW всі заявки вважаються новими і відкриваються повторно.
 chrome.storage.session.get(['autoPostedIds']).then(result => {
   (result.autoPostedIds || []).forEach(id => autoPostedIds.add(id));
   console.log('[LogiDesk] Loaded autoPostedIds from session:', autoPostedIds.size);
-}).catch(() => {});
+  fetchOrders(); // старт ПІСЛЯ завантаження
+}).catch(() => {
+  fetchOrders(); // старт навіть якщо storage недоступний
+});
 
 function persistAutoPostedIds() {
   chrome.storage.session.set({ autoPostedIds: [...autoPostedIds] }).catch(() => {});
 }
 
-// ===== ALARMS — надійний polling в MV3 =====
-// setInterval вбивається через 5 хв коли SW засинає. Alarms — ні.
+// ===== ALARMS =====
 chrome.alarms.create('fetchOrders',        { periodInMinutes: 0.5 });
 chrome.alarms.create('refreshDellaAuto',   { periodInMinutes: 10  });
-chrome.alarms.create('importLardiSearch',  { periodInMinutes: 2   });
+chrome.alarms.create('importLardiSearch',  { periodInMinutes: 3   });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'fetchOrders')       fetchOrders();
@@ -34,7 +40,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'importLardiSearch') importFromLardiSearch();
 });
 
-// ===== АВТО-ОНОВЛЕННЯ DELLA (8:00–18:00 за Берліном) =====
+// ===== АВТО-ОНОВЛЕННЯ DELLA (8:00-18:00 за Берліном) =====
 function isBerlinWorkHours() {
   const now = new Date();
   const hourStr = new Intl.DateTimeFormat('de-DE', {
@@ -42,23 +48,20 @@ function isBerlinWorkHours() {
     hour: 'numeric',
     hour12: false
   }).format(now);
-  const hour = parseInt(hourStr, 10); // '12 Uhr' → 12, not NaN
+  const hour = parseInt(hourStr, 10);
   return hour >= 8 && hour < 18;
 }
 
 async function maybeRefreshDella() {
   if (!isBerlinWorkHours()) {
-    console.log('[LogiDesk] Della auto-refresh skipped — outside working hours (Berlin 8:00–18:00)');
+    console.log('[LogiDesk] Della auto-refresh skipped — outside working hours (Berlin 8:00-18:00)');
     return;
   }
 
   console.log('[LogiDesk] Della auto-refresh triggered');
-
-  // Шукаємо вже відкриту вкладку della.ua/my/
   const tabs = await chrome.tabs.query({ url: 'https://della.ua/my/*' });
 
   if (tabs.length > 0) {
-    // Є відкрита вкладка — перезавантажуємо щоб content script точно завантажився
     const tabId = tabs[0].id;
     chrome.tabs.reload(tabId);
     const listenerExisting = (tId, changeInfo) => {
@@ -72,20 +75,16 @@ async function maybeRefreshDella() {
     };
     chrome.tabs.onUpdated.addListener(listenerExisting);
   } else {
-    // Відкриваємо нову вкладку, чекаємо завантаження, шлемо повідомлення, закриваємо
     chrome.tabs.create({ url: 'https://della.ua/my/' }, (tab) => {
       const autoTabId = tab.id;
       const listener = (tabId, changeInfo) => {
         if (tabId !== autoTabId || changeInfo.status !== 'complete') return;
         chrome.tabs.onUpdated.removeListener(listener);
-        // Чекаємо 5 сек щоб сторінка відрендерила всі заявки
         setTimeout(() => {
-          // Fallback: закрити вкладку якщо content script не відповів за 60 сек
           const closeTimer = setTimeout(() => chrome.tabs.remove(autoTabId).catch(() => {}), 60000);
           chrome.tabs.sendMessage(autoTabId, { type: 'refresh_della_all' }, (resp) => {
             clearTimeout(closeTimer);
             console.log('[LogiDesk] Della auto-refresh result (new tab):', resp);
-            // Закриваємо вкладку тільки після отримання відповіді
             chrome.tabs.remove(autoTabId).catch(() => {});
           });
         }, 5000);
@@ -95,18 +94,23 @@ async function maybeRefreshDella() {
   }
 }
 
-// ===== ІМПОРТ ЧУЖИХ ЗАЯВОК З LARDI (веб-скрейпінг, вкладка не закривається) =====
+// ===== ІМПОРТ З LARDI SEARCH =====
 async function importFromLardiSearch() {
   try {
-    // Шукаємо вже відкриту вкладку з пошуком Lardi
     const tabs = await chrome.tabs.query({ url: 'https://lardi-trans.com/log/search/gruz/*' });
     let tabId;
 
     if (tabs.length > 0) {
-      // Вкладка є — навігуємо на правильний URL (може бути старий URL з фільтрами)
       tabId = tabs[0].id;
+      const currentUrl = tabs[0].url || '';
+
+      // Якщо вже на правильному URL — просто перезавантажуємо
       await new Promise(resolve => {
-        chrome.tabs.update(tabId, { url: LARDI_SEARCH_URL });
+        if (currentUrl === LARDI_SEARCH_URL) {
+          chrome.tabs.reload(tabId);
+        } else {
+          chrome.tabs.update(tabId, { url: LARDI_SEARCH_URL });
+        }
         const listener = (tId, changeInfo) => {
           if (tId !== tabId || changeInfo.status !== 'complete') return;
           chrome.tabs.onUpdated.removeListener(listener);
@@ -115,7 +119,7 @@ async function importFromLardiSearch() {
         chrome.tabs.onUpdated.addListener(listener);
       });
     } else {
-      // Відкриваємо нову вкладку (active: false — у фоні)
+      // Відкриваємо нову вкладку у фоні
       tabId = await new Promise(resolve => {
         chrome.tabs.create({ url: LARDI_SEARCH_URL, active: false }, tab => {
           const listener = (tId, changeInfo) => {
@@ -128,10 +132,9 @@ async function importFromLardiSearch() {
       });
     }
 
-    // Чекаємо 12 секунд — React повинен відрендерити список
+    // Чекаємо 12 секунд — React має відрендерити список
     await new Promise(r => setTimeout(r, 12000));
 
-    // Скрейпимо заявки
     chrome.tabs.sendMessage(tabId, { type: 'scrape_lardi_search' }, async (resp) => {
       if (chrome.runtime.lastError) {
         console.log('[LogiDesk] Lardi scrape error:', chrome.runtime.lastError.message);
@@ -141,16 +144,16 @@ async function importFromLardiSearch() {
         console.log('[LogiDesk] Lardi search: 0 proposals found');
         return;
       }
-      console.log(`[LogiDesk] Lardi search: got ${resp.proposals.length} proposals`);
+      console.log('[LogiDesk] Lardi search: got ' + resp.proposals.length + ' proposals');
 
       try {
-        const res = await fetch(`${API_URL}/api/import/proposals`, {
+        const res = await fetch(API_URL + '/api/import/proposals', {
           method: 'POST',
           headers: { 'x-api-key': API_KEY, 'Content-Type': 'application/json' },
           body: JSON.stringify({ proposals: resp.proposals }),
         });
         const data = await res.json();
-        console.log(`[LogiDesk] Imported ${data.imported}/${data.total} new proposals`);
+        console.log('[LogiDesk] Imported ' + data.imported + '/' + data.total + ' new proposals');
       } catch (e) {
         console.error('[LogiDesk] Import proposals error:', e.message);
       }
@@ -165,42 +168,39 @@ async function importFromLardiSearch() {
 async function fetchOrders() {
   try {
     const [pendingRes, activeRes] = await Promise.all([
-      fetch(`${API_URL}/api/orders/pending`, { headers: { 'x-api-key': API_KEY } }),
-      fetch(`${API_URL}/api/orders/active`,  { headers: { 'x-api-key': API_KEY } })
+      fetch(API_URL + '/api/orders/pending', { headers: { 'x-api-key': API_KEY } }),
+      fetch(API_URL + '/api/orders/active',  { headers: { 'x-api-key': API_KEY } })
     ]);
 
-    if (!pendingRes.ok) throw new Error(`HTTP ${pendingRes.status}`);
-    if (!activeRes.ok)  throw new Error(`HTTP ${activeRes.status}`);
+    if (!pendingRes.ok) throw new Error('HTTP ' + pendingRes.status);
+    if (!activeRes.ok)  throw new Error('HTTP ' + activeRes.status);
 
     pendingOrders = await pendingRes.json();
     activeOrders  = await activeRes.json();
 
-    // Бейдж — кількість нових заявок
     const count = pendingOrders.length;
     chrome.action.setBadgeText({ text: count > 0 ? String(count) : '' });
     chrome.action.setBadgeBackgroundColor({ color: '#1e3a5f' });
 
-    // Повідомляємо popup якщо він відкритий
     chrome.runtime.sendMessage({
       type: 'orders_updated',
       pending: pendingOrders,
       active: activeOrders
     }).catch(() => {});
 
-    // ===== АВТО-РОЗМІЩЕННЯ НОВИХ ЗАЯВОК =====
-    // Авто-постимо на Della ТІЛЬКИ імпортовані заявки (з Lardi scraper/import)
-    // Власні заявки користувача НЕ чіпаємо — їх він виставляє сам
+    // ===== АВТО-РОЗМІЩЕННЯ =====
+    // Постимо тільки імпортовані заявки. Між відкриттям вкладок — 5 сек пауза.
     let autoPostDelay = 0;
     for (const order of pendingOrders) {
       const source = order.data?._source || '';
       const isImported = source === 'lardi_import' || source === 'lardi_scrape';
-      if (!isImported) continue; // пропускаємо власні заявки
+      if (!isImported) continue;
 
       if (!autoPostedIds.has(order.id)) {
         autoPostedIds.add(order.id);
         persistAutoPostedIds();
-        console.log(`[LogiDesk] Auto-posting order #${order.id}: ${order.data?.from} → ${order.data?.to} (delay: ${autoPostDelay * 2}s)`);
-        setTimeout(() => autoPostOrder(order), autoPostDelay * 2000);
+        console.log('[LogiDesk] Auto-posting order #' + order.id + ': ' + order.data?.from + ' -> ' + order.data?.to + ' (delay: ' + (autoPostDelay * 5) + 's)');
+        setTimeout(() => autoPostOrder(order), autoPostDelay * 5000);
         autoPostDelay++;
       }
     }
@@ -212,22 +212,19 @@ async function fetchOrders() {
   }
 }
 
-// ===== АВТО-РОЗМІЩЕННЯ: спочатку Lardi (якщо не через API), потім Della =====
+// ===== АВТО-РОЗМІЩЕННЯ =====
 async function autoPostOrder(order) {
-  console.log(`[LogiDesk] Starting auto-post for order #${order.id}`);
+  console.log('[LogiDesk] Starting auto-post for order #' + order.id);
 
   if (order.posted_lardi) {
-    // Lardi вже виставлено через API — відкриваємо тільки Della
-    console.log(`[LogiDesk] Order #${order.id} already posted to Lardi via API → Della only`);
     await openAndFill('della', order);
   } else {
-    // Lardi ще не виставлено — відкриваємо через розширення, Della — після підтвердження
     pendingDellaMap.set(order.id, order);
     await openAndFill('lardi', order);
   }
 }
 
-// ===== ВІДКРИТИ САЙТ І ЗАПОВНИТИ ФОРМУ =====
+// ===== ВІДКРИТИ ВКЛАДКУ З ФОРМОЮ =====
 function openAndFill(platform, order) {
   const urls = {
     lardi: 'https://lardi-trans.com/log/mygruztrans/v2/add/gruz/',
@@ -236,40 +233,57 @@ function openAndFill(platform, order) {
 
   return new Promise((resolve) => {
     chrome.tabs.create({ url: urls[platform] }, (tab) => {
-      const listener = (tabId, changeInfo) => {
-        if (tabId !== tab.id || changeInfo.status !== 'complete') return;
+      const tabId = tab.id;
+
+      const listener = (tId, changeInfo) => {
+        if (tId !== tabId || changeInfo.status !== 'complete') return;
         chrome.tabs.onUpdated.removeListener(listener);
 
-        // Чекаємо 3 сек поки React відрендерить форму
         setTimeout(() => {
-          chrome.tabs.sendMessage(tab.id, { type: 'fill_form', order }, (resp) => {
-            console.log(`[LogiDesk] fill_form sent to ${platform} tab #${tab.id}`, resp);
+          chrome.tabs.sendMessage(tabId, { type: 'fill_form', order }, (resp) => {
+            console.log('[LogiDesk] fill_form sent to ' + platform + ' tab #' + tabId, resp);
           });
 
-          // Fallback: позначаємо як active через 40 сек
-          // (якщо content script не відповів — форма заповнюється ~25 сек)
-          setTimeout(() => {
-            markPosted(order.id, platform);
-          }, 40000);
+          // Fallback: якщо content script не відповів за 45 сек — закриваємо і позначаємо
+          const fallbackTimer = setTimeout(() => {
+            if (formTabsMap.has(tabId)) {
+              formTabsMap.delete(tabId);
+              console.log('[LogiDesk] Fallback close: ' + platform + ' tab #' + tabId + ' for order #' + order.id);
+              chrome.tabs.remove(tabId).catch(() => {});
+              markPosted(order.id, platform);
+            }
+          }, 45000);
 
+          formTabsMap.set(tabId, { orderId: order.id, platform, fallbackTimer });
           resolve(tab);
         }, 3000);
       };
+
       chrome.tabs.onUpdated.addListener(listener);
     });
   });
 }
 
+// ===== ЗАКРИТИ ВКЛАДКУ ФОРМИ (після підтвердження від content script) =====
+function closeFormTab(tabId) {
+  const info = formTabsMap.get(tabId);
+  if (!info) return;
+  clearTimeout(info.fallbackTimer);
+  formTabsMap.delete(tabId);
+  // Затримка щоб content script встиг завершити роботу
+  setTimeout(() => chrome.tabs.remove(tabId).catch(() => {}), 1500);
+}
+
 // ===== ПОЗНАЧИТИ ЯК РОЗМІЩЕНУ =====
 async function markPosted(orderId, platform) {
   try {
-    const res = await fetch(`${API_URL}/api/orders/${orderId}/status`, {
+    const res = await fetch(API_URL + '/api/orders/' + orderId + '/status', {
       method: 'POST',
       headers: { 'x-api-key': API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'active', platform })
     });
     if (res.ok) {
-      console.log(`[LogiDesk] Order #${orderId} marked as active on ${platform}`);
+      console.log('[LogiDesk] Order #' + orderId + ' marked as active on ' + platform);
       await fetchOrders();
     }
   } catch (e) {
@@ -280,7 +294,7 @@ async function markPosted(orderId, platform) {
 // ===== ПОЗНАЧИТИ ЯК ОНОВЛЕНУ =====
 async function markRefreshed(orderId, platform) {
   try {
-    await fetch(`${API_URL}/api/orders/${orderId}/refreshed`, {
+    await fetch(API_URL + '/api/orders/' + orderId + '/refreshed', {
       method: 'POST',
       headers: { 'x-api-key': API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({ platform })
@@ -291,7 +305,7 @@ async function markRefreshed(orderId, platform) {
   }
 }
 
-// ===== ОБРОБКА ПОВІДОМЛЕНЬ ВІД POPUP І CONTENT SCRIPTS =====
+// ===== ОБРОБКА ПОВІДОМЛЕНЬ =====
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'get_orders') {
@@ -312,14 +326,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'mark_posted') {
     const { orderId, platform } = msg;
+
+    // Закриваємо вкладку форми і скасовуємо fallback таймер
+    if (sender.tab?.id) {
+      closeFormTab(sender.tab.id);
+    }
+
     markPosted(orderId, platform);
 
-    // Якщо Lardi підтверджено → відкриваємо Della (тільки для авто-постів)
+    // Якщо Lardi підтверджено — відкриваємо Della
     if (platform === 'lardi') {
       const order = pendingDellaMap.get(orderId);
       if (order) {
         pendingDellaMap.delete(orderId);
-        console.log(`[LogiDesk] Lardi confirmed → opening Della for order #${orderId} in 3s`);
+        console.log('[LogiDesk] Lardi confirmed -> opening Della for order #' + orderId + ' in 3s');
         setTimeout(() => openAndFill('della', order), 3000);
       }
     }
@@ -339,6 +359,3 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 });
-
-// ===== СТАРТ: опитування одразу при запуску SW =====
-fetchOrders();
