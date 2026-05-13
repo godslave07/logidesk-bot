@@ -1246,11 +1246,12 @@ async function importLardiOrders() {
   if (!LARDI_TOKEN) return;
 
   try {
-    // Пошук вантажних пропозицій: Україна → Україна, гривня
+    // Пошук вантажних пропозицій: Україна → Україна, гривня, готівка, мінімум 11000 грн
     const searchBody = {
       waypointListSource: [{ countrySign: 'UA' }],
       waypointListTarget: [{ countrySign: 'UA' }],
-      paymentCurrencyId: 2,  // UAH
+      paymentCurrencyId: 2,   // UAH
+      paymentFormIds:    [2], // готівка (cash) — Lardi form ID 2
       size: 100,
       page: 0,
     };
@@ -1297,27 +1298,43 @@ async function importLardiOrders() {
       const currencyId = p.payment?.currencyId ?? p.paymentCurrencyId ?? 0;
       if (currencyId && currencyId !== 2) continue;
 
-      // Мінімальна ціна 5000 грн
+      // Тільки готівка (cash) — якщо є інфо про форму оплати
+      const paymentForms = p.paymentForms || p.payment?.forms || [];
+      if (paymentForms.length > 0) {
+        const hasCash = paymentForms.some(f => {
+          const fid  = typeof f === 'object' ? f?.id : f;
+          const fname = (f?.name || '').toLowerCase();
+          return fid === 2 || fname.includes('готів') || fname.includes('нал') || fname.includes('cash');
+        });
+        if (!hasCash) {
+          console.log(`[Lardi Import] Skipping #${propId} — not cash payment`);
+          continue;
+        }
+      }
+
+      // Мінімальна ціна 11000 грн готівка
       const price = parseFloat(p.payment?.price ?? p.paymentValue ?? 0);
-      if (!price || price < 5000) continue;
+      if (!price || price < 11000) continue;
 
       const from = p.waypointListSource?.[0]?.town?.name || p.waypointListSource?.[0]?.address || '';
       const to   = p.waypointListTarget?.[0]?.town?.name || p.waypointListTarget?.[0]?.address || '';
       if (!from || !to) continue;
 
-      const dellaPrice = price - 500;
+      // Виставляємо в Делла на 1000 грн менше ніж ціна в Ларді
+      const dellaPrice = price - 1000;
       const data = {
         from,
         to,
-        cargoName:  p.contentName || 'ТНВ',
-        weight:     p.sizeMass    || '',
-        volume:     p.sizeVolume  || '',
-        price:      dellaPrice,
-        currency:   'UAH',
-        dateFrom:   p.dateFrom    || '',
-        _source:    'lardi_import',
-        _origPrice: price,
-        _lardiId:   propId,
+        cargoName:   p.contentName || 'ТНВ',
+        weight:      p.sizeMass    || '',
+        volume:      p.sizeVolume  || '',
+        price:       dellaPrice,
+        currency:    'UAH',
+        paymentType: 'Готівка',
+        dateFrom:    p.dateFrom    || '',
+        _source:     'lardi_import',
+        _origPrice:  price,
+        _lardiId:    propId,
       };
 
       try {
@@ -1362,28 +1379,33 @@ app.post('/api/import/proposals', auth, async (req, res) => {
   let imported = 0;
   for (const p of proposals) {
     const price = parseFloat(p.price);
-    if (!price || price < 5000) continue;  // мінімум 5000 грн
+    if (!price || price < 11000) continue;  // мінімум 11000 грн готівка
     if (!p.from) continue;
+
+    // Тільки готівка
+    const pt = (p.paymentType || '').toLowerCase();
+    if (pt && !pt.includes('готів') && !pt.includes('нал') && !pt.includes('cash')) continue;
 
     const sourceId = p.id ? String(p.id) : null;
 
     // Dedup через in-memory set
     if (sourceId && _importedLardiIds.has(sourceId)) continue;
 
-    const dellaPrice = price - 500;
+    const dellaPrice = price - 1000;
     const data = {
-      from:       p.from   || '',
-      to:         p.to     || '',
-      cargoName:  p.cargoName || 'ТНВ',
-      weight:     p.weight || '',
-      volume:     p.volume || '',
-      truckType:  p.truckType || '',
-      price:      dellaPrice,
-      currency:   'UAH',
-      dateFrom:   p.dateFrom || '',
-      _source:    'lardi_scrape',
-      _origPrice: price,
-      _lardiId:   sourceId || '',
+      from:        p.from   || '',
+      to:          p.to     || '',
+      cargoName:   p.cargoName || 'ТНВ',
+      weight:      p.weight || '',
+      volume:      p.volume || '',
+      truckType:   p.truckType || '',
+      price:       dellaPrice,
+      currency:    'UAH',
+      paymentType: 'Готівка',
+      dateFrom:    p.dateFrom || '',
+      _source:     'lardi_scrape',
+      _origPrice:  price,
+      _lardiId:    sourceId || '',
     };
 
     try {
