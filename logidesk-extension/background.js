@@ -5,24 +5,45 @@ const LARDI_SEARCH_URL = 'https://lardi-trans.com/log/search/gruz/wf3i640-27ii3i
 let pendingOrders = [];
 let activeOrders = [];
 
-// Черга на авто-розміщення Della: orderId → order
+// Для ручного post_lardi з попапа: orderId → order (щоб потім відкрити Della)
 const pendingDellaMap = new Map();
 
-// IDs заявок що вже були авто-розміщені.
+// IDs заявок що вже були авто-розміщені
 const autoPostedIds = new Set();
 
-// Відстеження відкритих форм-вкладок: tabId → { orderId, platform, fallbackTimer }
+// Відстеження відкритих форм-вкладок: tabId → { orderId, platform, fallbackTimer, resolve }
 const formTabsMap = new Map();
 
+// ===== ЧЕРГА АВТО-РОЗМІЩЕННЯ (один запис за раз) =====
+const autoPostQueue = [];
+let autoPostBusy = false;
+
+function enqueueAutoPost(order) {
+  autoPostQueue.push(order);
+  if (!autoPostBusy) drainAutoPostQueue();
+}
+
+async function drainAutoPostQueue() {
+  if (autoPostBusy) return;
+  autoPostBusy = true;
+  while (autoPostQueue.length > 0) {
+    const order = autoPostQueue.shift();
+    try {
+      await autoPostOrder(order);
+    } catch (e) {
+      console.error('[LogiDesk] autoPostOrder error:', e.message);
+    }
+  }
+  autoPostBusy = false;
+}
+
 // ===== ЗАВАНТАЖЕННЯ autoPostedIds + СТАРТ =====
-// ВАЖЛИВО: fetchOrders викликається тільки ПІСЛЯ того як autoPostedIds завантажено,
-// інакше при перезапуску SW всі заявки вважаються новими і відкриваються повторно.
 chrome.storage.session.get(['autoPostedIds']).then(result => {
   (result.autoPostedIds || []).forEach(id => autoPostedIds.add(id));
   console.log('[LogiDesk] Loaded autoPostedIds from session:', autoPostedIds.size);
-  fetchOrders(); // старт ПІСЛЯ завантаження
+  fetchOrders();
 }).catch(() => {
-  fetchOrders(); // старт навіть якщо storage недоступний
+  fetchOrders();
 });
 
 function persistAutoPostedIds() {
@@ -104,7 +125,6 @@ async function importFromLardiSearch() {
       tabId = tabs[0].id;
       const currentUrl = tabs[0].url || '';
 
-      // Якщо вже на правильному URL — просто перезавантажуємо
       await new Promise(resolve => {
         if (currentUrl === LARDI_SEARCH_URL) {
           chrome.tabs.reload(tabId);
@@ -119,7 +139,6 @@ async function importFromLardiSearch() {
         chrome.tabs.onUpdated.addListener(listener);
       });
     } else {
-      // Відкриваємо нову вкладку у фоні
       tabId = await new Promise(resolve => {
         chrome.tabs.create({ url: LARDI_SEARCH_URL, active: false }, tab => {
           const listener = (tId, changeInfo) => {
@@ -132,7 +151,6 @@ async function importFromLardiSearch() {
       });
     }
 
-    // Чекаємо 12 секунд — React має відрендерити список
     await new Promise(r => setTimeout(r, 12000));
 
     chrome.tabs.sendMessage(tabId, { type: 'scrape_lardi_search' }, async (resp) => {
@@ -188,9 +206,7 @@ async function fetchOrders() {
       active: activeOrders
     }).catch(() => {});
 
-    // ===== АВТО-РОЗМІЩЕННЯ =====
-    // Постимо тільки імпортовані заявки. Між відкриттям вкладок — 5 сек пауза.
-    let autoPostDelay = 0;
+    // ===== АВТО-РОЗМІЩЕННЯ — кладемо в чергу по одному =====
     for (const order of pendingOrders) {
       const source = order.data?._source || '';
       const isImported = source === 'lardi_import' || source === 'lardi_scrape';
@@ -199,9 +215,8 @@ async function fetchOrders() {
       if (!autoPostedIds.has(order.id)) {
         autoPostedIds.add(order.id);
         persistAutoPostedIds();
-        console.log('[LogiDesk] Auto-posting order #' + order.id + ': ' + order.data?.from + ' -> ' + order.data?.to + ' (delay: ' + (autoPostDelay * 5) + 's)');
-        setTimeout(() => autoPostOrder(order), autoPostDelay * 5000);
-        autoPostDelay++;
+        console.log('[LogiDesk] Queuing auto-post for order #' + order.id + ': ' + order.data?.from + ' -> ' + order.data?.to);
+        enqueueAutoPost(order);
       }
     }
 
@@ -212,19 +227,22 @@ async function fetchOrders() {
   }
 }
 
-// ===== АВТО-РОЗМІЩЕННЯ =====
+// ===== АВТО-РОЗМІЩЕННЯ (послідовно: Lardi чекаємо → потім Della) =====
 async function autoPostOrder(order) {
-  console.log('[LogiDesk] Starting auto-post for order #' + order.id);
-
+  console.log('[LogiDesk] Auto-post start: order #' + order.id);
   if (order.posted_lardi) {
+    // Вже є на Lardi — виставляємо тільки на Della
     await openAndFill('della', order);
   } else {
-    pendingDellaMap.set(order.id, order);
+    // Спочатку Lardi (чекаємо завершення), потім Della
     await openAndFill('lardi', order);
+    await openAndFill('della', order);
   }
+  console.log('[LogiDesk] Auto-post done: order #' + order.id);
 }
 
 // ===== ВІДКРИТИ ВКЛАДКУ З ФОРМОЮ =====
+// Повертає Promise що резолвиться коли вкладка ЗАКРИТА (форма відправлена або fallback 45s)
 function openAndFill(platform, order) {
   const urls = {
     lardi: 'https://lardi-trans.com/log/mygruztrans/v2/add/gruz/',
@@ -244,18 +262,19 @@ function openAndFill(platform, order) {
             console.log('[LogiDesk] fill_form sent to ' + platform + ' tab #' + tabId, resp);
           });
 
-          // Fallback: якщо content script не відповів за 45 сек — закриваємо і позначаємо
+          // Fallback: якщо content script не відповів за 45 сек — закриваємо і рухаємось далі
           const fallbackTimer = setTimeout(() => {
-            if (formTabsMap.has(tabId)) {
+            const info = formTabsMap.get(tabId);
+            if (info) {
               formTabsMap.delete(tabId);
               console.log('[LogiDesk] Fallback close: ' + platform + ' tab #' + tabId + ' for order #' + order.id);
               chrome.tabs.remove(tabId).catch(() => {});
               markPosted(order.id, platform);
+              info.resolve(); // черга рухається далі
             }
           }, 45000);
 
-          formTabsMap.set(tabId, { orderId: order.id, platform, fallbackTimer });
-          resolve(tab);
+          formTabsMap.set(tabId, { orderId: order.id, platform, fallbackTimer, resolve });
         }, 3000);
       };
 
@@ -270,8 +289,11 @@ function closeFormTab(tabId) {
   if (!info) return;
   clearTimeout(info.fallbackTimer);
   formTabsMap.delete(tabId);
-  // Затримка щоб content script встиг завершити роботу
-  setTimeout(() => chrome.tabs.remove(tabId).catch(() => {}), 1500);
+  // Затримка щоб content script встиг завершити роботу, потім резолвимо чергу
+  setTimeout(() => {
+    chrome.tabs.remove(tabId).catch(() => {});
+    info.resolve(); // черга рухається далі
+  }, 1500);
 }
 
 // ===== ПОЗНАЧИТИ ЯК РОЗМІЩЕНУ =====
@@ -314,6 +336,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'post_lardi') {
+    // Ручне розміщення: зберігаємо щоб після Lardi відкрити Della
+    pendingDellaMap.set(msg.order.id, msg.order);
     openAndFill('lardi', msg.order);
     sendResponse({ ok: true });
     return true;
@@ -327,19 +351,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'mark_posted') {
     const { orderId, platform } = msg;
 
-    // Закриваємо вкладку форми і скасовуємо fallback таймер
+    // Закриваємо вкладку і резолвимо Promise (черга або ручний потік рухається далі)
     if (sender.tab?.id) {
       closeFormTab(sender.tab.id);
     }
 
     markPosted(orderId, platform);
 
-    // Якщо Lardi підтверджено — відкриваємо Della
+    // Тільки для РУЧНОГО розміщення (post_lardi): після Lardi відкриваємо Della
+    // Авто-розміщення цього не потребує — autoPostOrder сам чекає через await
     if (platform === 'lardi') {
       const order = pendingDellaMap.get(orderId);
       if (order) {
         pendingDellaMap.delete(orderId);
-        console.log('[LogiDesk] Lardi confirmed -> opening Della for order #' + orderId + ' in 3s');
+        console.log('[LogiDesk] Manual Lardi confirmed -> opening Della for order #' + orderId + ' in 3s');
         setTimeout(() => openAndFill('della', order), 3000);
       }
     }
