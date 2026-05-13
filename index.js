@@ -1393,19 +1393,23 @@ app.post('/api/import/proposals', auth, async (req, res) => {
 
     const dellaPrice = price - 1000;
     const data = {
-      from:        p.from   || '',
-      to:          p.to     || '',
-      cargoName:   p.cargoName || 'ТНВ',
-      weight:      p.weight || '',
-      volume:      p.volume || '',
-      truckType:   p.truckType || '',
-      price:       dellaPrice,
-      currency:    'UAH',
-      paymentType: 'Готівка',
-      dateFrom:    p.dateFrom || '',
-      _source:     'lardi_scrape',
-      _origPrice:  price,
-      _lardiId:    sourceId || '',
+      from:          p.from         || '',
+      to:            p.to           || '',
+      cargoName:     p.cargoName    || 'ТНВ',
+      weight:        p.weight       || '',
+      volume:        p.volume       || '',
+      truckType:     p.truckType    || '',
+      loadingType:   p.loadingType  || '',
+      palletType:    p.palletType   || '',
+      palletCount:   p.palletCount  || '',
+      price:         dellaPrice,
+      currency:      'UAH',
+      paymentType:   'Готівка',
+      paymentMoment: p.paymentMoment || '',
+      dateFrom:      p.dateFrom     || '',
+      _source:       'lardi_scrape',
+      _origPrice:    price,
+      _lardiId:      sourceId       || '',
     };
 
     try {

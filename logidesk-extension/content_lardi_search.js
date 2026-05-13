@@ -29,7 +29,6 @@ async function scrapeLardiSearch() {
   }
 
   // ===== Attempt 1: table rows (classic + new Lardi) =====
-  // First try specific selectors, then fall back to ALL tr rows with enough cells
   let tableRows = Array.from(document.querySelectorAll(
     'tr[data-id], tr[data-cargo], tr.trHover, tr[class*="cargo"], tr[class*="Cargo"]'
   ));
@@ -45,11 +44,6 @@ async function scrapeLardiSearch() {
   }
 
   console.log(`[LogiDesk Search] Attempt1: ${tableRows.length} table rows`);
-  // Debug: log first 3 rows to see their structure
-  tableRows.slice(0, 3).forEach((row, i) => {
-    const cells = Array.from(row.querySelectorAll('td'));
-    console.log(`[LogiDesk Search] Row ${i}: cells=${cells.length}, text="${(row.innerText||'').slice(0,200).replace(/\n/g,'|')}"`);
-  });
   for (const row of tableRows) {
     addUnique(parseTableRow(row));
   }
@@ -90,45 +84,44 @@ async function scrapeLardiSearch() {
     }
   }
 
-  console.log(`[LogiDesk Search] Total extracted: ${proposals.length}`, proposals.map(p => `${p.from}→${p.to} ${p.price}грн`));
+  console.log(`[LogiDesk Search] Total extracted: ${proposals.length}`,
+    proposals.map(p => `${p.from}→${p.to} ${p.price}грн (${p.cargoName})`));
   return proposals;
 }
 
-// ===== Parse a TABLE ROW by column position (robust, no regex for cities) =====
+// ===== Parse a TABLE ROW by column position =====
+// Lardi column order: [Country] [Date] [Transport+Loading] [FromCity] [ToCity] [Cargo+Pallets] [Price] [Contact]
 function parseTableRow(row) {
   const cells = Array.from(row.querySelectorAll('td'));
   if (cells.length < 5) return null;
 
   const rowText = row.innerText || '';
-
-  // Skip безготівка immediately
   const lower = rowText.toLowerCase();
   if (lower.includes('безгот') || lower.includes('безнал')) return null;
 
-  // Find city cells: look for cells that contain location pins (svg/img) or "обл."
-  // Lardi table column order: Country | Date | Transport | From | To | Cargo | Price | Contact
-  // Try by cells with map pin icons first
-  const cityСells = cells.filter(td => {
-    const html = td.innerHTML;
-    return html.includes('svg') || html.includes('pin') || html.includes('marker') ||
-           td.querySelector('svg') || td.querySelector('[class*="pin"]') ||
-           td.querySelector('[class*="city"]') || td.querySelector('[class*="location"]');
-  });
+  // === CITIES — find by SVG/pin icons, fall back to column index ===
+  const cityCells = cells.filter(td =>
+    td.querySelector('svg') ||
+    td.querySelector('[class*="pin"]') ||
+    td.querySelector('[class*="city"]') ||
+    td.querySelector('[class*="location"]') ||
+    td.innerHTML.includes('pin') || td.innerHTML.includes('marker')
+  );
 
-  let fromText = '', toText = '';
+  let fromText = '', toText = '', fromIdx = -1, toIdx = -1;
 
-  if (cityСells.length >= 2) {
-    fromText = cleanCity(cityСells[0].innerText);
-    toText   = cleanCity(cityСells[1].innerText);
+  if (cityCells.length >= 2) {
+    fromText = cleanCity(cityCells[0].innerText);
+    toText   = cleanCity(cityCells[1].innerText);
+    fromIdx  = cells.indexOf(cityCells[0]);
+    toIdx    = cells.indexOf(cityCells[1]);
   } else {
-    // Fallback: assume columns 3 and 4 (standard Lardi table)
-    // Try multiple offsets since some tables have an extra status column
     for (const offset of [3, 2, 4]) {
       const f = cleanCity(cells[offset]?.innerText || '');
       const t = cleanCity(cells[offset + 1]?.innerText || '');
       if (isCity(f) && isCity(t) && f !== t) {
-        fromText = f;
-        toText = t;
+        fromText = f; toText = t;
+        fromIdx = offset; toIdx = offset + 1;
         break;
       }
     }
@@ -136,7 +129,7 @@ function parseTableRow(row) {
 
   if (!fromText || !toText || !isCity(fromText) || !isCity(toText)) return null;
 
-  // Price: find cell with грн/UAH/₴
+  // === PRICE ===
   let price = 0;
   for (const td of cells) {
     const t = td.innerText;
@@ -144,25 +137,69 @@ function parseTableRow(row) {
     if (m) {
       price = parseFloat(m[1].replace(/\s+/g, ''));
       if (price >= 11000) break;
-      price = 0; // keep looking for higher price
+      price = 0;
     }
   }
   if (!price || price < 11000) return null;
+
+  // === TRANSPORT CELL (usually fromIdx−1, i.e. column 2) ===
+  // Contains: truck type ("Тент") + loading side ("бічне")
+  const transportIdx = fromIdx > 0 ? fromIdx - 1 : 2;
+  const transportText = cells[transportIdx]?.innerText || cells[2]?.innerText || '';
+  const truckType   = extractTruckType(transportText || rowText);
+  const loadingType = extractLoadingType(transportText || rowText);
+
+  // === CARGO CELL (usually toIdx+1, i.e. column 5) ===
+  // Contains: cargo name ("сухі будівельні суміші") + pallet info ("EURO 1,2x0,8м 914шт")
+  let cargoName   = 'ТНВ';
+  let palletType  = '';
+  let palletCount = '';
+
+  const cargoIdx  = toIdx > 0 ? toIdx + 1 : 5;
+  const cargoCell = cells[cargoIdx] || cells[5] || null;
+  if (cargoCell) {
+    const raw = cargoCell.innerText.trim();
+    if (raw.length > 0) {
+      // First non-empty line is the cargo name
+      const firstLine = raw.split(/[\n\r]/)[0].trim();
+      if (firstLine.length >= 2 && firstLine.length <= 80) {
+        cargoName = firstLine;
+      }
+      // Pallet type: EURO / FIN
+      const ptM = raw.match(/\b(EURO|EUR|FIN|Євро|Фін)\b/i);
+      if (ptM) {
+        const ptRaw = ptM[1].toLowerCase();
+        palletType = (ptRaw === 'євро' || ptRaw === 'euro' || ptRaw === 'eur') ? 'EURO'
+                   : (ptRaw === 'фін'  || ptRaw === 'fin')                      ? 'FIN'
+                   : ptM[1].toUpperCase();
+      }
+      // Pallet count: "914шт"
+      const pcM = raw.match(/(\d{1,5})\s*шт/i);
+      if (pcM) palletCount = pcM[1];
+    }
+  }
+
+  // === PAYMENT MOMENT (from full row text) ===
+  const paymentMoment = extractPaymentMoment(rowText);
 
   const id = row.dataset?.id || row.dataset?.cargo ||
              row.getAttribute('data-id') || row.getAttribute('data-cargo-id') || null;
 
   return {
     id,
-    from: fromText,
-    to:   toText,
+    from:         fromText,
+    to:           toText,
     price,
-    paymentType: 'Готівка',
-    weight:    (rowText.match(/(\d+(?:[.,]\d+)?)\s*т\b/i) || [])[1]?.replace(',', '.') || '',
-    volume:    (rowText.match(/(\d+(?:[.,]\d+)?)\s*м[³3]/i) || [])[1]?.replace(',', '.') || '',
-    truckType: extractTruckType(rowText),
-    dateFrom:  extractDate(rowText),
-    cargoName: extractCargo(rowText),
+    paymentType:  'Готівка',
+    paymentMoment,
+    weight:       (rowText.match(/(\d+(?:[.,]\d+)?)\s*т\b/i) || [])[1]?.replace(',', '.') || '',
+    volume:       (rowText.match(/(\d+(?:[.,]\d+)?)\s*м[³3]/i) || [])[1]?.replace(',', '.') || '',
+    truckType,
+    loadingType,
+    cargoName,
+    palletType,
+    palletCount,
+    dateFrom:     extractDate(rowText),
   };
 }
 
@@ -170,7 +207,6 @@ function parseTableRow(row) {
 function parseProposalFromText(text, el) {
   if (!text || text.length < 8) return null;
 
-  // Route: City → City  (тільки стрілки і тире-довгі; НЕ дефіс щоб не хапати назви компаній типу "Годен-Авто")
   const routeMatch = text.match(
     /([А-ЯЁІЇЄA-ZÀ-Ü][а-яёіїє\w\s\.]{1,30}?)\s*[→–—]\s*([А-ЯЁІЇЄA-ZÀ-Ü][а-яёіїє\w\s\.]{1,30})/u
   );
@@ -193,17 +229,32 @@ function parseProposalFromText(text, el) {
   const id = el?.dataset?.id || el?.dataset?.cargo ||
              el?.getAttribute?.('data-id') || el?.getAttribute?.('data-cargo-id') || null;
 
+  // Pallet type from text
+  let palletType = '';
+  const ptM = text.match(/\b(EURO|EUR|FIN|Євро|Фін)\b/i);
+  if (ptM) {
+    const ptRaw = ptM[1].toLowerCase();
+    palletType = (ptRaw === 'євро' || ptRaw === 'euro' || ptRaw === 'eur') ? 'EURO'
+               : (ptRaw === 'фін'  || ptRaw === 'fin')                      ? 'FIN'
+               : ptM[1].toUpperCase();
+  }
+  const pcM = text.match(/(\d{1,5})\s*шт/i);
+
   return {
     id,
     from,
     to,
     price,
-    paymentType: 'Готівка',
-    weight:    (text.match(/(\d+(?:[.,]\d+)?)\s*т\b/i) || [])[1]?.replace(',', '.') || '',
-    volume:    (text.match(/(\d+(?:[.,]\d+)?)\s*м[³3]/i) || [])[1]?.replace(',', '.') || '',
-    truckType: extractTruckType(text),
-    dateFrom:  extractDate(text),
-    cargoName: extractCargo(text),
+    paymentType:  'Готівка',
+    paymentMoment: extractPaymentMoment(text),
+    weight:       (text.match(/(\d+(?:[.,]\d+)?)\s*т\b/i) || [])[1]?.replace(',', '.') || '',
+    volume:       (text.match(/(\d+(?:[.,]\d+)?)\s*м[³3]/i) || [])[1]?.replace(',', '.') || '',
+    truckType:    extractTruckType(text),
+    loadingType:  extractLoadingType(text),
+    cargoName:    'ТНВ',   // can't reliably extract cargo from freeform text without structure
+    palletType,
+    palletCount:  pcM ? pcM[1] : '',
+    dateFrom:     extractDate(text),
   };
 }
 
@@ -217,7 +268,7 @@ async function waitForContent() {
     '[class*="result-item"]', '[class*="b-search-result"]',
   ];
 
-  for (let i = 0; i < 60; i++) {   // wait up to 30 seconds
+  for (let i = 0; i < 60; i++) {
     for (const sel of selectors) {
       if (document.querySelector(sel)) {
         console.log('[LogiDesk Search] Content found:', sel);
@@ -238,7 +289,7 @@ async function waitForContent() {
 
 // ===== Helpers =====
 
-// Strip region info from city name: "Житомир (Житомирська обл.)" → "Житомир"
+// Strip region info: "Житомир (Житомирська обл.)" → "Житомир"
 // Also handles multiline innerText: "Київ\nКиївська обл." → "Київ"
 function cleanCity(str) {
   if (!str) return '';
@@ -265,22 +316,33 @@ function extractTruckType(text) {
   return '';
 }
 
+// Loading side — "бічне" on Lardi → "збоку" for Della
+function extractLoadingType(text) {
+  const t = text.toLowerCase();
+  if (t.includes('збоку') || t.includes('бічн') || t.includes('боків') || t.includes('бок'))  return 'збоку';
+  if (t.includes('зверху') || t.includes('верх') || t.includes('top'))                         return 'зверху';
+  if (t.includes('задн')   || t.includes('ззаду') || t.includes('rear'))                       return 'задня';
+  return '';
+}
+
+// Payment moment: "на розвантаженні" → 'розвантаження'
+function extractPaymentMoment(text) {
+  const t = text.toLowerCase();
+  if (t.includes('розвантаж'))  return 'розвантаження';
+  if (t.includes('завантаж'))   return 'завантаження';
+  if (t.includes('передоплат')) return 'передоплата';
+  return '';
+}
+
 function extractDate(text) {
   const m = text.match(/(\d{2})\.(\d{2})\.(\d{4})/);
   if (m) return `${m[1]}.${m[2]}.${m[3]}`;
-  // DD.MM format (without year)
   const m2 = text.match(/(\d{2})\.(\d{2})/);
   if (m2) {
     const year = new Date().getFullYear();
     return `${m2[1]}.${m2[2]}.${year}`;
   }
   return '';
-}
-
-function extractCargo(text) {
-  const m = text.match(/вантаж[:\s]+([^\n,;]{2,30})/i)
-           || text.match(/груз[:\s]+([^\n,;]{2,30})/i);
-  return m?.[1]?.trim() || 'ТНВ';
 }
 
 function sleep(ms) {

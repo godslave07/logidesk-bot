@@ -169,6 +169,69 @@ function paymentValue(paymentType) {
   return null;
 }
 
+// ===== HELPERS: find form fields by label text =====
+// Used for checkboxes/radios/selects that are inside modals (Деталі оплати, Додаткова інформація).
+// These elements ARE in the DOM even when the modal is closed — just hidden via CSS.
+
+function findInputByLabel(labelText, inputType) {
+  // Strategy 1: <label for="id">labelText</label> → get element by id
+  const labels = document.querySelectorAll('label');
+  for (const lbl of labels) {
+    if (lbl.textContent.trim() === labelText) {
+      const forId = lbl.getAttribute('for');
+      if (forId) {
+        const el = document.getElementById(forId);
+        if (el && (!inputType || el.type === inputType)) return el;
+      }
+      // label wraps the input
+      const inner = lbl.querySelector(inputType ? `input[type="${inputType}"]` : 'input');
+      if (inner) return inner;
+    }
+  }
+  // Strategy 2: text node next to input
+  const inputs = inputType
+    ? document.querySelectorAll(`input[type="${inputType}"]`)
+    : document.querySelectorAll('input');
+  for (const inp of inputs) {
+    const parent = inp.parentElement;
+    if (!parent) continue;
+    const txt = parent.textContent.trim();
+    if (txt === labelText || txt.startsWith(labelText)) return inp;
+    // check next sibling text
+    let sib = inp.nextSibling;
+    while (sib) {
+      if (sib.nodeType === 3 && sib.textContent.trim() === labelText) return inp;
+      if (sib.nodeType === 1) break;
+      sib = sib.nextSibling;
+    }
+  }
+  return null;
+}
+
+function findSelectByLabel(labelText) {
+  const labels = document.querySelectorAll('label');
+  for (const lbl of labels) {
+    if (lbl.textContent.trim().includes(labelText)) {
+      const forId = lbl.getAttribute('for');
+      if (forId) {
+        const el = document.getElementById(forId);
+        if (el && el.tagName === 'SELECT') return el;
+      }
+      const inner = lbl.querySelector('select');
+      if (inner) return inner;
+    }
+  }
+  // Also try select immediately after a label-like element
+  const selects = document.querySelectorAll('select');
+  for (const sel of selects) {
+    const prev = sel.previousElementSibling;
+    if (prev && prev.textContent.trim().includes(labelText)) return sel;
+    const parent = sel.parentElement;
+    if (parent && parent.textContent.includes(labelText)) return sel;
+  }
+  return null;
+}
+
 // ===== MAIN FORM FILL =====
 async function fillDellaForm(order) {
   const d = order.data || order;
@@ -233,30 +296,85 @@ async function fillDellaForm(order) {
     currSel.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  // === PAYMENT TYPE ===
+  // === PAYMENT TYPE (Готівка radio в "Деталі оплати") ===
   const pVal = paymentValue(d.paymentType);
   if (pVal) {
-    const radio = document.querySelector(`input[name="request[price_cash]"][value="${pVal}"]`);
+    // Try by name attribute (standard form)
+    let radio = document.querySelector(`input[name="request[price_cash]"][value="${pVal}"]`);
+    // Fallback: find by label text
+    if (!radio) radio = findInputByLabel('Готіка', 'radio') || findInputByLabel('Готівка', 'radio');
     if (radio) {
       radio.checked = true;
       radio.dispatchEvent(new Event('change', { bubbles: true }));
+      console.log('[LogiDesk Della] Payment type set:', d.paymentType);
     }
   }
 
   // === PAYMENT MOMENT (Термін розрахунку) ===
   if (d.paymentMoment) {
-    const lower = d.paymentMoment.toLowerCase();
+    const pm = d.paymentMoment.toLowerCase();
+    // Known IDs: 30=При розвантаженні, 29=При завантаженні, 28=Передоплата
+    const momentIdMap = {
+      'розвантаж': 'request[extra][30]',
+      'завантаж':  'request[extra][29]',
+      'передоплат':'request[extra][28]',
+    };
     let momentId = null;
-    if (lower.includes('розвантаж'))       momentId = 'request[extra][30]';
-    else if (lower.includes('завантаж'))   momentId = 'request[extra][29]';
-    else if (lower.includes('передоплат')) momentId = 'request[extra][28]';
-
+    for (const [key, id] of Object.entries(momentIdMap)) {
+      if (pm.includes(key)) { momentId = id; break; }
+    }
     if (momentId) {
-      const chk = document.getElementById(momentId);
+      const chk = document.getElementById(momentId)
+               || findInputByLabel('При розвантаженні', 'checkbox')
+               || findInputByLabel('При завантаженні',  'checkbox');
       if (chk && !chk.checked) {
         chk.checked = true;
         chk.dispatchEvent(new Event('change', { bubbles: true }));
+        console.log('[LogiDesk Della] Payment moment set:', d.paymentMoment);
       }
+    }
+  }
+
+  // === LOADING TYPE (Збоку / Зверху / Задня) ===
+  if (d.loadingType) {
+    const lt = d.loadingType.toLowerCase();
+    const labelText = lt.includes('збок') || lt.includes('бічн') ? 'Збоку'
+                    : lt.includes('верх')                        ? 'Зверху'
+                    : lt.includes('задн')                        ? 'Задня'
+                    : '';
+    if (labelText) {
+      const chk = findInputByLabel(labelText, 'checkbox');
+      if (chk && !chk.checked) {
+        chk.checked = true;
+        chk.dispatchEvent(new Event('change', { bubbles: true }));
+        console.log('[LogiDesk Della] Loading type set:', labelText);
+      }
+    }
+  }
+
+  // === PALLET TYPE (Тип палет — select у "Додаткова інформація") ===
+  if (d.palletType) {
+    const palletSel = findSelectByLabel('Тип палет');
+    if (palletSel) {
+      // Find matching option by text (EURO, FIN, etc.)
+      const opt = Array.from(palletSel.options).find(o =>
+        o.text.toUpperCase().includes(d.palletType.toUpperCase())
+      );
+      if (opt) {
+        palletSel.value = opt.value;
+        palletSel.dispatchEvent(new Event('change', { bubbles: true }));
+        console.log('[LogiDesk Della] Pallet type set:', d.palletType, '→ option', opt.text);
+      }
+    }
+  }
+
+  // === PALLET COUNT (Кількість палет) ===
+  if (d.palletCount) {
+    const palletInp = findInputByLabel('Кількість палет', 'text')
+                   || findInputByLabel('Кільк. палет', 'text');
+    if (palletInp) {
+      setVal(palletInp, d.palletCount);
+      console.log('[LogiDesk Della] Pallet count set:', d.palletCount);
     }
   }
 
