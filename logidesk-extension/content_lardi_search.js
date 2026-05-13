@@ -157,7 +157,7 @@ function parseTableRow(row) {
     from: fromText,
     to:   toText,
     price,
-    paymentType: lower.includes('готів') || lower.includes('нал') ? 'Готівка' : 'Готівка',
+    paymentType: 'Готівка',
     weight:    (rowText.match(/(\d+(?:[.,]\d+)?)\s*т\b/i) || [])[1]?.replace(',', '.') || '',
     volume:    (rowText.match(/(\d+(?:[.,]\d+)?)\s*м[³3]/i) || [])[1]?.replace(',', '.') || '',
     truckType: extractTruckType(rowText),
@@ -198,7 +198,7 @@ function parseProposalFromText(text, el) {
     from,
     to,
     price,
-    paymentType: lower.includes('готів') || lower.includes('нал') ? 'Готівка' : 'Готівка',
+    paymentType: 'Готівка',
     weight:    (text.match(/(\d+(?:[.,]\d+)?)\s*т\b/i) || [])[1]?.replace(',', '.') || '',
     volume:    (text.match(/(\d+(?:[.,]\d+)?)\s*м[³3]/i) || [])[1]?.replace(',', '.') || '',
     truckType: extractTruckType(text),
@@ -239,9 +239,10 @@ async function waitForContent() {
 // ===== Helpers =====
 
 // Strip region info from city name: "Житомир (Житомирська обл.)" → "Житомир"
+// Also handles multiline innerText: "Київ\nКиївська обл." → "Київ"
 function cleanCity(str) {
   if (!str) return '';
-  return str.replace(/\(.*?\)/g, '').replace(/,.*$/, '').trim();
+  return str.split(/[\n\r]/)[0].replace(/\(.*?\)/g, '').replace(/,.*$/, '').trim();
 }
 
 function isCity(str) {
