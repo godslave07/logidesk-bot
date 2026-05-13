@@ -45,6 +45,11 @@ async function scrapeLardiSearch() {
   }
 
   console.log(`[LogiDesk Search] Attempt1: ${tableRows.length} table rows`);
+  // Debug: log first 3 rows to see their structure
+  tableRows.slice(0, 3).forEach((row, i) => {
+    const cells = Array.from(row.querySelectorAll('td'));
+    console.log(`[LogiDesk Search] Row ${i}: cells=${cells.length}, text="${(row.innerText||'').slice(0,200).replace(/\n/g,'|')}"`);
+  });
   for (const row of tableRows) {
     addUnique(parseTableRow(row));
   }
