@@ -625,6 +625,19 @@ app.post('/api/orders/:id/status', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Видалити всі pending заявки з lardi (криві скрапи)
+app.post('/api/orders/clear-imported', auth, async (req, res) => {
+  try {
+    const db = await getDb();
+    const result = await db.query(
+      `DELETE FROM orders WHERE status = 'pending' AND data->>'_source' IN ('lardi_import', 'lardi_scrape')`
+    );
+    await db.end();
+    console.log(`[API] Cleared ${result.rowCount} imported pending orders`);
+    res.json({ ok: true, deleted: result.rowCount });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Відмітити що заявку оновили на сайті
 app.post('/api/orders/:id/refreshed', auth, async (req, res) => {
   try {
