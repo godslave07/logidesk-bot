@@ -100,13 +100,16 @@ function parseTableRow(row) {
   if (lower.includes('безгот') || lower.includes('безнал')) return null;
 
   // === CITIES — find by SVG/pin icons, fall back to column index ===
-  const cityCells = cells.filter(td =>
-    td.querySelector('svg') ||
-    td.querySelector('[class*="pin"]') ||
-    td.querySelector('[class*="city"]') ||
-    td.querySelector('[class*="location"]') ||
-    td.innerHTML.includes('pin') || td.innerHTML.includes('marker')
-  );
+  const cityCells = cells.filter(td => {
+    const hasPinLike = td.querySelector('svg') ||
+      td.querySelector('[class*="pin"]') ||
+      td.querySelector('[class*="city"]') ||
+      td.querySelector('[class*="location"]') ||
+      td.innerHTML.includes('pin') || td.innerHTML.includes('marker');
+    if (!hasPinLike) return false;
+    // Only count as city cell if text contains lowercase Cyrillic (real city name)
+    return /[а-яёіїє]/u.test(td.innerText);
+  });
 
   let fromText = '', toText = '', fromIdx = -1, toIdx = -1;
 
@@ -298,7 +301,9 @@ function cleanCity(str) {
 
 function isCity(str) {
   if (!str || str.length < 2 || str.length > 50) return false;
-  return /^[А-ЯЁІЇЄA-ZÀ-Ü][а-яёіїєa-zA-Zà-ü\w\s\-\.]{1,49}$/u.test(str.trim());
+  const t = str.trim();
+  if (!/[а-яёіїє]/u.test(t)) return false; // must contain lowercase Cyrillic
+  return /^[А-ЯЁІЇЄA-ZÀ-Ü][а-яёіїєa-zA-Zà-ü\w\s\-\.]{1,49}$/u.test(t);
 }
 
 function extractTruckType(text) {
