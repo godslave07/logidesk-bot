@@ -1,6 +1,6 @@
 const API_URL = 'https://logidesk-bot-production.up.railway.app';
 const API_KEY = 'logidesk2024';
-const LARDI_SEARCH_URL = 'https://lardi-trans.com/log/search/gruz/wf1i640iwt1i640ipc4pv5000pt1';
+const LARDI_SEARCH_URL = 'https://lardi-trans.com/log/search/gruz/wf3i640-27ii3i640-17ii3i640-29iwt3i640-23ipc2pv1000000pt1';
 
 let pendingOrders = [];
 let activeOrders = [];
