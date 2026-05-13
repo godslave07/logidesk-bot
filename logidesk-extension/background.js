@@ -26,12 +26,12 @@ function persistAutoPostedIds() {
 // setInterval вбивається через 5 хв коли SW засинає. Alarms — ні.
 chrome.alarms.create('fetchOrders',        { periodInMinutes: 0.5 });
 chrome.alarms.create('refreshDellaAuto',   { periodInMinutes: 10  });
-// chrome.alarms.create('importLardiSearch',  { periodInMinutes: 2   }); // вимкнено — скрейпер дає некоректні назви міст
+chrome.alarms.create('importLardiSearch',  { periodInMinutes: 2   });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'fetchOrders')       fetchOrders();
   if (alarm.name === 'refreshDellaAuto')  maybeRefreshDella();
-  // if (alarm.name === 'importLardiSearch') importFromLardiSearch(); // вимкнено
+  if (alarm.name === 'importLardiSearch') importFromLardiSearch();
 });
 
 // ===== АВТО-ОНОВЛЕННЯ DELLA (8:00–18:00 за Берліном) =====
