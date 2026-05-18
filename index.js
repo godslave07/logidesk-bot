@@ -991,7 +991,21 @@ async function syncLardiProposals() {
       continue;
     }
 
-    if (knownIds.has(propId)) continue; // вже є в БД
+    if (knownIds.has(propId)) {
+      // Заявка вже є в БД — але може бути помилково позначена як completed/cancelled
+      // (наприклад, якщо код 7 спрацював помилково під час оновлення).
+      // Якщо вона досі опублікована на Lardi — реактивуємо її.
+      const reactivated = await db.query(
+        `UPDATE orders SET status='active', posted_lardi=true, last_refresh_lardi=NOW()
+         WHERE lardi_proposal_id=$1
+           AND (status IN ('completed','cancelled') OR posted_lardi=false)`,
+        [propId]
+      );
+      if (reactivated.rowCount > 0) {
+        console.log(`[Lardi Sync] Reactivated wrongly-completed proposal #${propId}`);
+      }
+      continue; // вже є в БД
+    }
 
     // Визначаємо власника (Валентин або Лена)
     const ownerFace = p.owner?.face || p.ownerFace || '';
