@@ -1000,14 +1000,10 @@ async function syncLardiProposals() {
       continue;
     }
 
-    // Синхронізуємо тільки заявки Валентина (Герус В.В., ФЛ-П) — Лену пропускаємо
-    const ownerFace = p.owner?.face || p.ownerFace || '';
-    if (ownerFace === 'Лена') {
-      console.log(`[Lardi Sync] Skipping proposal #${propId} (owner: Лена)`);
-      continue;
-    }
-
     if (knownIds.has(propId)) continue; // вже є в БД
+
+    // Визначаємо власника (Валентин або Лена)
+    const ownerFace = p.owner?.face || p.ownerFace || '';
 
     // Витягуємо дані з пропозиції для зручного відображення
     const from = p.waypointListSource?.[0]?.town?.name || p.waypointListSource?.[0]?.address || '';
@@ -1021,6 +1017,7 @@ async function syncLardiProposals() {
       price:      p.paymentValue || '',
       truckType:  p.cargoBodyTypeIds ? 'Тент' : '',
       _source:    'lardi_sync',
+      _owner:     ownerFace || 'Валентин',
     };
 
     await db.query(
@@ -1122,7 +1119,8 @@ app.post('/api/lardi/sync', auth, async (req, res) => {
   }
 });
 
-// ===== АВТО-ОНОВЛЕННЯ LARDI (щогодини, 8:00–18:00 за Берліном) =====
+// ===== АВТО-ОНОВЛЕННЯ LARDI (щогодини, 5:00–18:00 за Берліном) =====
+// Охоплює: Валентин 8:00–18:00 і Лена 5:00–17:00
 function isBerlinWorkHours() {
   const hourStr = new Intl.DateTimeFormat('de-DE', {
     timeZone: 'Europe/Berlin',
@@ -1130,7 +1128,7 @@ function isBerlinWorkHours() {
     hour12: false
   }).format(new Date());
   const hour = parseInt(hourStr, 10); // '12 Uhr' → 12, not NaN
-  return hour >= 8 && hour < 18;
+  return hour >= 5 && hour < 18;
 }
 
 async function refreshLardiOrders(force = false) {
