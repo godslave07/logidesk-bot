@@ -124,11 +124,11 @@ async function maybeRefreshDella() {
   }
 }
 
-// ===== АВТО-ОНОВЛЕННЯ LARDI (5:00-17:00 за Києвом) =====
-function isKyivLardiHours() {
+// ===== АВТО-ОНОВЛЕННЯ LARDI (5:00-17:00 за Берліном) =====
+function isBerlinLardiHours() {
   const now = new Date();
-  const hourStr = new Intl.DateTimeFormat('uk-UA', {
-    timeZone: 'Europe/Kiev',
+  const hourStr = new Intl.DateTimeFormat('de-DE', {
+    timeZone: 'Europe/Berlin',
     hour: 'numeric',
     hour12: false
   }).format(now);
@@ -137,8 +137,8 @@ function isKyivLardiHours() {
 }
 
 async function maybeRefreshLardi() {
-  if (!isKyivLardiHours()) {
-    console.log('[LogiDesk] Lardi auto-refresh skipped — outside working hours (Kyiv 5:00-17:00)');
+  if (!isBerlinLardiHours()) {
+    console.log('[LogiDesk] Lardi auto-refresh skipped — outside working hours (Berlin 5:00-17:00)');
     return;
   }
 
