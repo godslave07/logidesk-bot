@@ -53,15 +53,6 @@ async function initDb() {
   await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS source_lardi_id BIGINT`).catch(() => {});
   await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS orders_source_lardi_id_idx ON orders(source_lardi_id) WHERE source_lardi_id IS NOT NULL`).catch(() => {});
 
-  // Очищуємо записи першої синхронізації (вона включала Лену) — при старті sync повторно
-  // імпортує тільки заявки Валентина завдяки фільтру owner.face
-  const deleted = await db.query(
-    `DELETE FROM orders WHERE chat_id = 0 AND data->>'_source' = 'lardi_sync'`
-  ).catch(() => ({ rowCount: 0 }));
-  if (deleted.rowCount > 0) {
-    console.log(`[DB Init] Cleaned up ${deleted.rowCount} old lardi_sync records (will re-import filtered)`);
-  }
-
   // Скасовуємо тестові заявки бота (розміщені під час налагодження)
   const cancelled = await db.query(
     `UPDATE orders SET status = 'cancelled'
@@ -1144,7 +1135,7 @@ async function refreshLardiOrders(force = false) {
 
   const db = await getDb();
   const result = await db.query(
-    "SELECT id, chat_id, lardi_proposal_id FROM orders WHERE status NOT IN ('cancelled','done','archived') AND posted_lardi = true AND lardi_proposal_id IS NOT NULL"
+    "SELECT id, chat_id, lardi_proposal_id FROM orders WHERE status IN ('new','active') AND posted_lardi = true AND lardi_proposal_id IS NOT NULL"
   );
   await db.end();
 
@@ -1176,17 +1167,47 @@ async function refreshLardiOrders(force = false) {
   const successIds = data?.cargoes?.success || data?.cargo?.success || data?.success || [];
   const errors     = data?.cargoes?.errors  || data?.cargo?.errors  || data?.errors  || [];
 
+  // Розбиваємо помилки за типом
+  const notFoundIds = errors.filter(e => e.errorCode === 7 || e.code === 7).map(e => Number(e.id));
+  const tooSoonIds  = errors.filter(e => e.errorCode === 16 || e.code === 16).map(e => Number(e.id));
+
+  const db2 = await getDb();
+
   if (successIds.length) {
-    const db2 = await getDb();
     for (const propId of successIds) {
       await db2.query(
         'UPDATE orders SET last_refresh_lardi = NOW() WHERE lardi_proposal_id = $1',
         [propId]
       );
     }
-    await db2.end();
     console.log(`[Lardi Refresh] Updated last_refresh_lardi for ${successIds.length} orders`);
+  }
 
+  // Для "too soon" (код 16) — оновлюємо таймер, щоб наступний цикл не повторював занадто рано
+  if (tooSoonIds.length) {
+    for (const propId of tooSoonIds) {
+      await db2.query(
+        'UPDATE orders SET last_refresh_lardi = NOW() WHERE lardi_proposal_id = $1',
+        [propId]
+      );
+    }
+    console.log(`[Lardi Refresh] Marked ${tooSoonIds.length} orders as "too soon" (last_refresh updated)`);
+  }
+
+  // Для "not found" (код 7) — заявка більше не існує на Lardi, позначаємо як завершену
+  if (notFoundIds.length) {
+    for (const propId of notFoundIds) {
+      await db2.query(
+        "UPDATE orders SET status = 'completed', posted_lardi = false WHERE lardi_proposal_id = $1 AND status NOT IN ('completed','cancelled')",
+        [propId]
+      );
+    }
+    console.log(`[Lardi Refresh] Marked ${notFoundIds.length} stale proposals as completed (not found on Lardi)`);
+  }
+
+  await db2.end();
+
+  if (successIds.length) {
     // Telegram notification to all unique chat_ids of refreshed orders
     const refreshedPropIds = new Set(successIds.map(Number));
     const chatIds = [...new Set(
@@ -1203,7 +1224,9 @@ async function refreshLardiOrders(force = false) {
   return {
     attempted: cargoIds.length,
     success:   successIds.length,
-    errors:    errors.map(e => ({ id: e.id, message: e.message, code: e.errorCode })),
+    tooSoon:   tooSoonIds.length,
+    notFound:  notFoundIds.length,
+    errors:    errors.map(e => ({ id: e.id, message: e.message, code: e.errorCode || e.code })),
   };
 }
 
@@ -1479,11 +1502,6 @@ initDb().then(() => {
   app.listen(PORT, () => {
     console.log(`LogiDesk started on port ${PORT}`);
 
-    // Синхронізуємо заявки з Lardi при старті (імпортуємо невідомі пропозиції)
-    syncLardiProposals()
-      .then(r => console.log('[Lardi Sync] Startup sync:', r))
-      .catch(e => console.error('[Lardi Sync] Startup sync error:', e.message));
-
     // Завантажуємо вже імпортовані ID (для дедуплікації при прийомі від розширення)
     loadImportedLardiIds()
       .then(() => console.log('[Lardi Import] Dedup IDs loaded'))
@@ -1494,13 +1512,17 @@ initDb().then(() => {
       importLardiOrders().catch(e => console.error('[Lardi Import] Startup error:', e.message));
     }, 10000);
 
-    // При старті сервера в робочий час — одразу запускаємо оновлення.
-    // Так редеплой не зміщує розклад оновлень.
-    if (isBerlinWorkHours()) {
-      _lastAutoRefresh = Date.now();
-      refreshLardiOrders()
-        .then(r => console.log('[Lardi Refresh] Startup refresh:', r))
-        .catch(e => console.error('[Lardi Refresh] Startup refresh error:', e.message));
-    }
+    // При старті: спочатку синхронізуємо заявки, потім оновлюємо (без race condition)
+    syncLardiProposals()
+      .then(r => {
+        console.log('[Lardi Sync] Startup sync:', r);
+        // Тільки після завершення sync — запускаємо refresh (щоб всі заявки вже були в БД)
+        if (isBerlinWorkHours()) {
+          _lastAutoRefresh = Date.now();
+          return refreshLardiOrders();
+        }
+      })
+      .then(r => { if (r) console.log('[Lardi Refresh] Startup refresh:', r); })
+      .catch(e => console.error('[Lardi Sync/Refresh] Startup error:', e.message));
   });
 });
