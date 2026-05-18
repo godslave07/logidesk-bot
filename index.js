@@ -1239,6 +1239,8 @@ setInterval(async () => {
   if (now - _lastAutoRefresh < 30 * 60 * 1000) return; // менше 30 хв від останнього запуску
   _lastAutoRefresh = now;
   try {
+    // Спочатку синхронізуємо — щоб нові заявки (додані після старту) потрапили в БД
+    await syncLardiProposals();
     const result = await refreshLardiOrders();
     console.log('[Lardi Refresh] Scheduled result:', result);
   } catch (e) {
