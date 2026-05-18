@@ -5,6 +5,13 @@ const LARDI_SEARCH_URL = 'https://lardi-trans.com/log/search/gruz/wf3i640-27ii3i
 let pendingOrders = [];
 let activeOrders = [];
 
+// ===== АВТО-РОЗМІЩЕННЯ: стан тогла =====
+let autoPostEnabled = true;
+chrome.storage.local.get(['autoPostEnabled']).then(res => {
+  if (res.autoPostEnabled === false) autoPostEnabled = false;
+  console.log('[LogiDesk] autoPostEnabled loaded:', autoPostEnabled);
+}).catch(() => {});
+
 // Для ручного post_lardi з попапа: orderId → order (щоб потім відкрити Della)
 const pendingDellaMap = new Map();
 
@@ -117,6 +124,10 @@ async function maybeRefreshDella() {
 
 // ===== ІМПОРТ З LARDI SEARCH =====
 async function importFromLardiSearch() {
+  if (!autoPostEnabled) {
+    console.log('[LogiDesk] importFromLardiSearch skipped — auto-post disabled');
+    return;
+  }
   try {
     const tabs = await chrome.tabs.query({ url: 'https://lardi-trans.com/log/search/gruz/*' });
     let tabId;
@@ -215,6 +226,10 @@ async function fetchOrders() {
       if (!autoPostedIds.has(order.id)) {
         autoPostedIds.add(order.id);
         persistAutoPostedIds();
+        if (!autoPostEnabled) {
+          console.log('[LogiDesk] Auto-post disabled — skipping order #' + order.id);
+          continue;
+        }
         console.log('[LogiDesk] Queuing auto-post for order #' + order.id + ': ' + order.data?.from + ' -> ' + order.data?.to);
         enqueueAutoPost(order);
       }
@@ -332,6 +347,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'get_orders') {
     sendResponse({ pending: pendingOrders, active: activeOrders });
+    return true;
+  }
+
+  if (msg.type === 'set_auto_post') {
+    autoPostEnabled = msg.enabled;
+    chrome.storage.local.set({ autoPostEnabled: autoPostEnabled });
+    console.log('[LogiDesk] autoPostEnabled set to:', autoPostEnabled);
+    sendResponse({ ok: true });
     return true;
   }
 
