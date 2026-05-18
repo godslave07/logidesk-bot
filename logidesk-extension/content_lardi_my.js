@@ -1,4 +1,4 @@
-// LogiDesk — Lardi-Trans /log/mygruztrans/ — авто-оновлення всіх активних заявок
+// LogiDesk — Lardi-Trans /log/mygruztrans/ — авто-оновлення через API
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'refresh_lardi_all') {
@@ -14,86 +14,67 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 async function refreshAllLardi() {
   console.log('[LogiDesk] Lardi refresh: starting on', location.href);
-
-  // Чекаємо повного рендерингу сторінки
   await sleep(2000);
 
-  // Спроба 1: знайти кнопки "Підняти" / "Поднять" / "Актуалізувати"
-  const buttons = findRaiseButtons();
-  console.log('[LogiDesk] Lardi refresh: found', buttons.length, 'raise buttons');
+  // 1. Збираємо proposalId через React fiber з кнопок "Повторити"
+  const allIds   = extractProposalIds(false); // всі
+  const activeIds = extractProposalIds(true);  // тільки не disabled
 
-  if (!buttons.length) {
-    console.warn('[LogiDesk] Lardi refresh: no raise buttons found');
-    showNotification('⚠️ LogiDesk: кнопки оновлення Lardi не знайдено.\nВідкрий lardi-trans.com/log/mygruztrans/ вручну.');
-    return { count: 0 };
+  console.log('[LogiDesk] Lardi refresh: total proposals:', allIds.length, '| ready to repeat:', activeIds.length);
+
+  if (!activeIds.length) {
+    const msg = allIds.length
+      ? `⏳ LogiDesk: всі ${allIds.length} заявок ще не готові до повтору`
+      : '⚠️ LogiDesk: заявок на сторінці не знайдено';
+    console.warn('[LogiDesk] Lardi refresh:', msg);
+    showNotification(msg);
+    return { count: 0, total: allIds.length };
   }
 
-  showNotification(`🔄 LogiDesk: оновлюю ${buttons.length} заявок на Lardi...`);
+  showNotification(`🔄 LogiDesk: оновлюю ${activeIds.length} заявок на Lardi...`);
 
-  let clicked = 0;
-  for (let i = 0; i < buttons.length; i++) {
-    const btn = buttons[i];
-    try {
-      btn.click();
-      clicked++;
-      console.log(`[LogiDesk] Lardi refresh: clicked ${clicked}/${buttons.length} —`, btn.textContent.trim().slice(0, 40));
-    } catch (e) {
-      console.warn('[LogiDesk] Lardi refresh: click error', e.message);
-    }
-    // Затримка між кліками щоб сервер не заблокував
-    if (i < buttons.length - 1) await sleep(3500);
+  // 2. Один POST-запит на всі активні заявки
+  try {
+    const res = await fetch('/webapi/proposal/my/repeat/', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gruzIds: activeIds, proposalStatus: 'published' })
+    });
+
+    const text = await res.text();
+    console.log('[LogiDesk] Lardi repeat API response:', res.status, text.slice(0, 200));
+
+    let data = null;
+    try { data = JSON.parse(text); } catch (_) {}
+
+    const repeated = data?.repeated || data?.result || activeIds.length;
+    showNotification(`✅ LogiDesk: ${activeIds.length} заявок оновлено на Lardi!`);
+    return { count: activeIds.length, ids: activeIds };
+
+  } catch (e) {
+    console.error('[LogiDesk] Lardi repeat API error:', e.message);
+    showNotification('❌ LogiDesk: помилка оновлення Lardi: ' + e.message);
+    return { count: 0, error: e.message };
   }
-
-  showNotification(`✅ LogiDesk: ${clicked} заявок оновлено на Lardi!`);
-  return { count: clicked };
 }
 
-function findRaiseButtons() {
-  const result = [];
-  const seen = new Set();
-
-  function add(el) {
-    if (!el || seen.has(el)) return;
-    seen.add(el);
-    result.push(el);
-  }
-
-  // 1. Класові селектори
-  const classSelectors = [
-    '[class*="raise"]',
-    '[class*="renew"]',
-    '[class*="actualize"]',
-    '[class*="refresh-btn"]',
-    '[class*="update-btn"]',
-    '[class*="bump"]',
-  ];
-  for (const sel of classSelectors) {
-    document.querySelectorAll(sel).forEach(el => add(el));
-  }
-
-  // 2. onclick-селектори
-  const onclickSelectors = [
-    '[onclick*="raise"]',
-    '[onclick*="renew"]',
-    '[onclick*="actualize"]',
-    '[onclick*="Raise"]',
-    '[onclick*="Renew"]',
-  ];
-  for (const sel of onclickSelectors) {
-    document.querySelectorAll(sel).forEach(el => add(el));
-  }
-
-  // 3. За текстом кнопки / посилання
-  const textTargets = ['підняти', 'поднять', 'оновити', 'обновить', 'актуалізувати', 'актуализировать'];
-  document.querySelectorAll('button, a, span, div').forEach(el => {
-    const text = (el.textContent || '').trim().toLowerCase();
-    if (textTargets.some(t => text === t || text.startsWith(t))) {
-      add(el);
+// Витягує proposalId через React fiber з кнопок .proposal-table--column--repeat__repeat
+// activeOnly=true — тільки кнопки без disabled
+function extractProposalIds(activeOnly) {
+  const btns = Array.from(document.querySelectorAll('.proposal-table--column--repeat__repeat'));
+  const ids = [];
+  for (const btn of btns) {
+    if (activeOnly && btn.disabled) continue;
+    const fk = Object.keys(btn).find(k => k.startsWith('__reactFiber'));
+    let f = fk ? btn[fk] : null;
+    while (f) {
+      const p = f.memoizedProps;
+      if (p && p.proposalId) { ids.push(p.proposalId); break; }
+      f = f.return;
     }
-  });
-
-  console.log('[LogiDesk] findRaiseButtons: total', result.length);
-  return result;
+  }
+  return ids;
 }
 
 function sleep(ms) {
