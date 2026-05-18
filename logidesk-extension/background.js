@@ -60,11 +60,13 @@ function persistAutoPostedIds() {
 // ===== ALARMS =====
 chrome.alarms.create('fetchOrders',        { periodInMinutes: 0.5 });
 chrome.alarms.create('refreshDellaAuto',   { periodInMinutes: 10  });
+chrome.alarms.create('refreshLardiAuto',   { periodInMinutes: 30  });
 chrome.alarms.create('importLardiSearch',  { periodInMinutes: 3   });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'fetchOrders')       fetchOrders();
   if (alarm.name === 'refreshDellaAuto')  maybeRefreshDella();
+  if (alarm.name === 'refreshLardiAuto')  maybeRefreshLardi();
   if (alarm.name === 'importLardiSearch') importFromLardiSearch();
 });
 
@@ -113,6 +115,61 @@ async function maybeRefreshDella() {
           chrome.tabs.sendMessage(autoTabId, { type: 'refresh_della_all' }, (resp) => {
             clearTimeout(closeTimer);
             console.log('[LogiDesk] Della auto-refresh result (new tab):', resp);
+            chrome.tabs.remove(autoTabId).catch(() => {});
+          });
+        }, 5000);
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+    });
+  }
+}
+
+// ===== АВТО-ОНОВЛЕННЯ LARDI (5:00-17:00 за Києвом) =====
+function isKyivLardiHours() {
+  const now = new Date();
+  const hourStr = new Intl.DateTimeFormat('uk-UA', {
+    timeZone: 'Europe/Kiev',
+    hour: 'numeric',
+    hour12: false
+  }).format(now);
+  const hour = parseInt(hourStr, 10);
+  return hour >= 5 && hour < 17;
+}
+
+async function maybeRefreshLardi() {
+  if (!isKyivLardiHours()) {
+    console.log('[LogiDesk] Lardi auto-refresh skipped — outside working hours (Kyiv 5:00-17:00)');
+    return;
+  }
+
+  console.log('[LogiDesk] Lardi auto-refresh triggered');
+  const LARDI_MY_URL = 'https://lardi-trans.com/log/mygruztrans/';
+  const tabs = await chrome.tabs.query({ url: 'https://lardi-trans.com/log/mygruztrans/*' });
+
+  if (tabs.length > 0) {
+    const tabId = tabs[0].id;
+    chrome.tabs.reload(tabId);
+    const listenerExisting = (tId, changeInfo) => {
+      if (tId !== tabId || changeInfo.status !== 'complete') return;
+      chrome.tabs.onUpdated.removeListener(listenerExisting);
+      setTimeout(() => {
+        chrome.tabs.sendMessage(tabId, { type: 'refresh_lardi_all' }, (resp) => {
+          console.log('[LogiDesk] Lardi auto-refresh result (reloaded tab):', resp);
+        });
+      }, 5000);
+    };
+    chrome.tabs.onUpdated.addListener(listenerExisting);
+  } else {
+    chrome.tabs.create({ url: LARDI_MY_URL }, (tab) => {
+      const autoTabId = tab.id;
+      const listener = (tabId, changeInfo) => {
+        if (tabId !== autoTabId || changeInfo.status !== 'complete') return;
+        chrome.tabs.onUpdated.removeListener(listener);
+        setTimeout(() => {
+          const closeTimer = setTimeout(() => chrome.tabs.remove(autoTabId).catch(() => {}), 120000);
+          chrome.tabs.sendMessage(autoTabId, { type: 'refresh_lardi_all' }, (resp) => {
+            clearTimeout(closeTimer);
+            console.log('[LogiDesk] Lardi auto-refresh result (new tab):', resp);
             chrome.tabs.remove(autoTabId).catch(() => {});
           });
         }, 5000);

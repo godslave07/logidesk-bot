@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LogiDesk",
-  "version": "1.6",
+  "version": "1.9",
   "description": "Автоматичне розміщення вантажних заявок на Lardi-Trans та Della.ua",
   "permissions": ["storage", "tabs", "alarms", "notifications"],
   "host_permissions": [
@@ -42,6 +42,16 @@
     {
       "matches": ["https://della.ua/my/*"],
       "js": ["content_della_my.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://lardi-trans.com/log/search/gruz/*"],
+      "js": ["content_lardi_search.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://lardi-trans.com/log/mygruztrans/*"],
+      "js": ["content_lardi_my.js"],
       "run_at": "document_idle"
     }
   ],
