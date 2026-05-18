@@ -60,7 +60,7 @@ function persistAutoPostedIds() {
 // ===== ALARMS =====
 chrome.alarms.create('fetchOrders',        { periodInMinutes: 0.5 });
 chrome.alarms.create('refreshDellaAuto',   { periodInMinutes: 10  });
-chrome.alarms.create('refreshLardiAuto',   { periodInMinutes: 30  });
+chrome.alarms.create('refreshLardiAuto',   { periodInMinutes: 61  });
 chrome.alarms.create('importLardiSearch',  { periodInMinutes: 3   });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
